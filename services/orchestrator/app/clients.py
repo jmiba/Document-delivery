@@ -15,12 +15,18 @@ class NextcloudClient:
         self.base = settings.nextcloud_base_url.rstrip("/")
         self.username = settings.nextcloud_username
         self.password = settings.nextcloud_password
+        self.dav_base_path = settings.nextcloud_dav_base_path
         self.root = settings.nextcloud_root_path.rstrip("/")
 
     def upload_pdf(self, local_path: Path, remote_filename: str) -> str:
         remote_path = f"{self.root}/{remote_filename}".replace("//", "/")
         quoted_path = quote(remote_path)
-        upload_url = f"{self.base}/remote.php/dav/files/{self.username}{quoted_path}"
+        encoded_username = quote(self.username, safe="")
+        dav_base_path = self.dav_base_path.replace("{username}", encoded_username).strip()
+        if not dav_base_path.startswith("/"):
+            dav_base_path = f"/{dav_base_path}"
+        dav_base_path = dav_base_path.rstrip("/")
+        upload_url = f"{self.base}{dav_base_path}{quoted_path}"
 
         with local_path.open("rb") as handle:
             response = requests.put(
@@ -55,10 +61,17 @@ class NextcloudClient:
 
 class ZoteroClient:
     def __init__(self) -> None:
-        self.user_id = settings.zotero_user_id
+        library_type = settings.zotero_library_type.strip().lower()
+        if library_type not in {"user", "group"}:
+            raise ValueError(
+                "ZOTERO_LIBRARY_TYPE must be 'user' or 'group'."
+            )
+        library_id = settings.zotero_library_id
+
+        zotero_scope = "users" if library_type == "user" else "groups"
         self.api_key = settings.zotero_api_key
         self.collection_key = settings.zotero_collection_key
-        self.base = f"https://api.zotero.org/users/{self.user_id}"
+        self.base = f"https://api.zotero.org/{zotero_scope}/{library_id}"
 
     def create_item(
         self,
@@ -82,12 +95,13 @@ class ZoteroClient:
             "language": bib.language or "",
             "abstractNote": bib.abstract_note or "",
             "url": download_url,
-            "collections": [self.collection_key],
             "extra": (
                 f"Request-ID: {request_id}\n"
                 f"Download-Link-Expires: {expires_on}"
             ),
         }
+        if self.collection_key:
+            item["collections"] = [self.collection_key]
 
         response = requests.post(
             endpoint,

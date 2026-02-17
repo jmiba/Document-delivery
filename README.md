@@ -61,57 +61,6 @@ docker compose up --build
 curl http://localhost:8000/health
 ```
 
-## Run in a local venv (API + worker outside Docker)
-
-1. Copy env file:
-
-```bash
-cp .env.example .env
-```
-
-2. Create local scan folder:
-
-```bash
-mkdir -p data/scans
-```
-
-3. Create and activate virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-4. Install dependencies:
-
-```bash
-pip install -r services/orchestrator/requirements.txt
-```
-
-5. Start Redis (still via Docker):
-
-```bash
-docker compose up -d redis
-```
-
-6. Run API (terminal 1):
-
-```bash
-PYTHONPATH=services/orchestrator uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-7. Run worker (terminal 2):
-
-```bash
-PYTHONPATH=services/orchestrator python -m app.worker
-```
-
-8. Optional: start Budibase only:
-
-```bash
-docker compose up -d budibase
-```
-
 ## Webhook payload example (FormCycle -> orchestrator)
 
 ```bash
@@ -144,5 +93,11 @@ curl -X POST http://localhost:8000/webhooks/formcycle \
 
 - `ocr_pdf_filename` must exist in `data/scans/`.
 - Default link expiry is controlled by `DEFAULT_LINK_EXPIRY_DAYS` in `.env`.
+- Upload DAV base path is controlled by `NEXTCLOUD_DAV_BASE_PATH`.
+- Default DAV base path is `/remote.php/dav/files/{username}`.
+- For Team folders via Groupfolders DAV, set for example `NEXTCLOUD_DAV_BASE_PATH=/remote.php/dav/groupfolders/12`.
+- Zotero library target is controlled by `ZOTERO_LIBRARY_TYPE` and `ZOTERO_LIBRARY_ID`.
+- For a group library, set `ZOTERO_LIBRARY_TYPE=group` and `ZOTERO_LIBRARY_ID=<group_id>`.
+- `ZOTERO_COLLECTION_KEY` is optional; leave it empty to create items in the library root.
 - FormCycle callback endpoint is configured via `FORMCYCLE_NOTIFY_URL`.
 - Budibase is exposed on `http://localhost:10000`.

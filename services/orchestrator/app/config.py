@@ -12,11 +12,13 @@ class Settings(BaseSettings):
     nextcloud_base_url: str
     nextcloud_username: str
     nextcloud_password: str
+    nextcloud_dav_base_path: str = "/remote.php/dav/files/{username}"
     nextcloud_root_path: str = "/Digitization"
 
-    zotero_user_id: str
+    zotero_library_type: str = "user"
+    zotero_library_id: str
     zotero_api_key: str
-    zotero_collection_key: str
+    zotero_collection_key: str | None = None
 
     formcycle_webhook_secret: str | None = None
     formcycle_notify_url: str | None = None
