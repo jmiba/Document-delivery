@@ -35,7 +35,7 @@ Minimal starter stack for a university-library print-digitization pipeline:
             └── worker.py
 ```
 
-## Quick start
+## Quick start (Docker)
 
 1. Copy env file:
 
@@ -59,6 +59,57 @@ docker compose up --build
 
 ```bash
 curl http://localhost:8000/health
+```
+
+## Run in a local venv (API + worker outside Docker)
+
+1. Copy env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Create local scan folder:
+
+```bash
+mkdir -p data/scans
+```
+
+3. Create and activate virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+4. Install dependencies:
+
+```bash
+pip install -r services/orchestrator/requirements.txt
+```
+
+5. Start Redis (still via Docker):
+
+```bash
+docker compose up -d redis
+```
+
+6. Run API (terminal 1):
+
+```bash
+PYTHONPATH=services/orchestrator uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+7. Run worker (terminal 2):
+
+```bash
+PYTHONPATH=services/orchestrator python -m app.worker
+```
+
+8. Optional: start Budibase only:
+
+```bash
+docker compose up -d budibase
 ```
 
 ## Webhook payload example (FormCycle -> orchestrator)
