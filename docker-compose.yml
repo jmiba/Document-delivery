@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: ./services/orchestrator
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./data/scans:/scans:ro
+
+  worker:
+    build:
+      context: ./services/orchestrator
+    command: python -m app.worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    volumes:
+      - ./data/scans:/scans:ro
+
+  budibase:
+    image: budibase/budibase:latest
+    restart: unless-stopped
+    ports:
+      - "10000:80"
+    volumes:
+      - budibase_data:/data
+
+volumes:
+  redis_data:
+  budibase_data:
