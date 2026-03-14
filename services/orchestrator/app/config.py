@@ -4,10 +4,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    redis_url: str = "redis://redis:6379/0"
-    queue_name: str = "digitization"
+    database_url: str = "sqlite:////app/data/delivery.sqlite3"
     scan_input_dir: str = "/scans"
+    work_dir: str = "/app/data/work"
+    worker_poll_interval_seconds: int = 15
+    attachment_poll_interval_seconds: int = 300
     default_link_expiry_days: int = 14
+
+    openalex_email: str | None = None
 
     nextcloud_base_url: str
     nextcloud_username: str
@@ -19,11 +23,14 @@ class Settings(BaseSettings):
     zotero_library_id: str
     zotero_api_key: str
     zotero_collection_key: str | None = None
+    zotero_in_process_tag: str = "in process"
 
     formcycle_webhook_secret: str | None = None
     formcycle_notify_url: str | None = None
     formcycle_notify_token: str | None = None
     internal_api_token: str | None = None
+
+    ocr_command_template: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

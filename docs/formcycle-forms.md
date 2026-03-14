@@ -1,110 +1,89 @@
-# FormCycle form sketch for digitization + delivery
+# FormCycle form sketch for SQLite + Streamlit delivery workflow
 
 ## Form 1: Public request intake (`digitization_request`)
 
-Purpose: collect article request and requester contact.
+Purpose: collect one or more article requests and hand them to FastAPI.
 
-Core fields:
-- `req_request_id` (hidden, generated): `DD-${submissionId}`
+Core requester fields:
+- `req_request_id` (hidden): generated request ID, for example `DD-[%$PROCESS_ID%]`
+- `req_submission_id` (hidden): FormCycle process or record identifier
 - `req_name` (text, required)
 - `req_email` (email, required)
-- `req_affiliation` (text, required)
-- `bib_title` (text, required)
-- `bib_authors` (text, required, semicolon-separated)
-- `bib_journal` (text, required)
-- `bib_year` (number, required)
-- `bib_volume` (text, optional)
-- `bib_issue` (text, optional)
-- `bib_pages` (text, optional)
-- `bib_doi` (text, optional)
-- `req_notes` (textarea, optional)
-- `req_copyright_ack` (checkbox, required)
-- `proc_status` (hidden): initial value `NEW`
+- `req_affiliation` (text, optional)
+- `req_delivery_days` (number, optional)
+
+Repeatable article fields:
+- `articleTitle`
+- `articleCreators`
+- `articleJournal`
+- `articleYear`
+- `articleVolume`
+- `articleIssue`
+- `articlePages`
+- `articleDoi`
 
 Workflow on submit:
-1. Set `proc_status=NEW`.
-2. Send confirmation to requester.
-3. Assign operator group task.
-4. Persist all fields for operator processing.
+1. Build one JSON payload with `items` as a list of repeated article objects.
+2. `POST` the payload to `/webhooks/formcycle/requests`.
+3. Add header `X-Formcycle-Secret: <FORMCYCLE_WEBHOOK_SECRET>`.
+4. Keep FormCycle process status as `REQUESTED`.
 
-## Form 2: Operator workbench (`digitization_operator`)
-
-Purpose: let operator manage scan completion and trigger orchestration.
-
-Core fields:
-- `op_request_id` (read-only, from Form 1)
-- `op_submission_id` (read-only, from Form 1)
-- `op_scan_filename` (text, required)
-- `op_status` (select): `IN_PROGRESS`, `SCAN_COMPLETE`, `NEEDS_CLARIFICATION`, `REJECTED`
-- `op_notes` (textarea)
-- `op_quality_check` (checkbox)
-
-Workflow on `op_status=SCAN_COMPLETE`:
-1. Validate `op_scan_filename` and `op_quality_check=true`.
-2. Execute FormCycle HTTP action `POST /webhooks/formcycle` to orchestrator:
+Target JSON shape:
 
 ```json
 {
-  "request_id": "${op_request_id}",
-  "formcycle_submission_id": "${op_submission_id}",
-  "event_type": "STATUS_CHANGED",
-  "status": "SCAN_COMPLETE",
-  "user_email": "${req_email}",
-  "user_name": "${req_name}",
-  "ocr_pdf_filename": "${op_scan_filename}",
-  "bibliographic_data": {
-    "item_type": "journalArticle",
-    "title": "${bib_title}",
-    "creators": "${bib_authors}".split(";"),
-    "publication_title": "${bib_journal}",
-    "year": "${bib_year}",
-    "volume": "${bib_volume}",
-    "issue": "${bib_issue}",
-    "pages": "${bib_pages}",
-    "doi": "${bib_doi}"
-  }
+  "request_id": "[%req_request_id%]",
+  "formcycle_submission_id": "[%req_submission_id%]",
+  "user_email": "[%req_email%]",
+  "user_name": "[%req_name%]",
+  "delivery_days": "[%req_delivery_days%]",
+  "items": [
+    {
+      "item_index": 0,
+      "bibliographic_data": {
+        "item_type": "journalArticle",
+        "title": "Article title",
+        "creators": ["Author One", "Author Two"],
+        "publication_title": "Journal title",
+        "year": "2024",
+        "volume": "12",
+        "issue": "3",
+        "pages": "44-59",
+        "doi": "10.1234/example"
+      }
+    }
+  ]
 }
 ```
 
-3. Add header `X-Formcycle-Secret: <FORMCYCLE_WEBHOOK_SECRET>`.
-4. Set `proc_status=QUEUED_FOR_DELIVERY`.
-5. On HTTP error, set `proc_status=DELIVERY_ERROR` and notify operator.
+## Form 2: Delivery callback (`digitization_delivery_callback`)
 
-## Form 3: Delivery callback (`digitization_delivery_callback`)
+Purpose: receive delivery results after all items in a request are ready.
 
-Purpose: receive orchestrator result and send final requester message via FormCycle.
+Expected callback fields:
+- `request_id`
+- `formcycle_submission_id`
+- `user_email`
+- `user_name`
+- `status`
+- `items[]`
 
-Endpoint input fields:
-- `cb_request_id`
-- `cb_formcycle_submission_id`
-- `cb_status`
-- `cb_user_email`
-- `cb_download_url`
-- `cb_expires_on`
-- `cb_zotero_item_key`
-- `cb_citation_json`
+Each callback item contains:
+- `item_index`
+- `citation_text`
+- `download_url`
+- `expires_on`
+- `zotero_item_key`
 
 Workflow on callback:
-1. Validate token from `Authorization: Bearer <FORMCYCLE_NOTIFY_TOKEN>`.
-2. Update original request row with:
-- `proc_status=DELIVERED`
-- `delivery_download_url`
-- `delivery_expires_on`
-- `delivery_zotero_key`
-3. Send requester email using FormCycle template:
-- Subject: `Your digitized article is ready`
-- Body includes citation metadata, download URL, and expiration date.
-4. If callback fails, set `proc_status=NOTIFICATION_ERROR` for manual retry.
+1. Validate `Authorization: Bearer <FORMCYCLE_NOTIFY_TOKEN>` if configured.
+2. Update FormCycle process status to `DELIVERED`.
+3. Send requester email with the normalized citation text and download link for each delivered item.
 
-## Status model (shared)
+## Suggested FormCycle statuses
 
-Recommended statuses:
-- `NEW`
+- `REQUESTED`
 - `IN_PROGRESS`
-- `SCAN_COMPLETE`
-- `QUEUED_FOR_DELIVERY`
+- `WAITING_FOR_ATTACHMENT`
 - `DELIVERED`
-- `NEEDS_CLARIFICATION`
-- `REJECTED`
-- `DELIVERY_ERROR`
-- `NOTIFICATION_ERROR`
+- `ERROR`

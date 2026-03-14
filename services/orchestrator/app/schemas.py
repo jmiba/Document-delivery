@@ -1,4 +1,8 @@
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class BibliographicData(BaseModel):
@@ -15,20 +19,85 @@ class BibliographicData(BaseModel):
     abstract_note: str | None = None
 
 
-class FormCycleEvent(BaseModel):
-    request_id: str
-    formcycle_submission_id: str | None = None
-    event_type: str = "STATUS_CHANGED"
-    status: str
-    user_email: str
-    user_name: str | None = None
-    ocr_pdf_filename: str
+class FormCycleRequestItem(BaseModel):
+    item_index: int | None = None
     bibliographic_data: BibliographicData
 
 
-class DeliveryResult(BaseModel):
+class FormCycleRequest(BaseModel):
     request_id: str
-    status: str
+    formcycle_submission_id: str | None = None
+    user_email: str
+    user_name: str | None = None
+    delivery_days: int | None = None
+    items: list[FormCycleRequestItem] = Field(default_factory=list)
+    bibliographic_data: BibliographicData | None = None
+
+    @model_validator(mode="after")
+    def ensure_items(self) -> "FormCycleRequest":
+        if not self.items and self.bibliographic_data:
+            self.items = [FormCycleRequestItem(item_index=0, bibliographic_data=self.bibliographic_data)]
+        if not self.items:
+            raise ValueError("At least one bibliographic item is required.")
+        for index, item in enumerate(self.items):
+            if item.item_index is None:
+                item.item_index = index
+        return self
+
+
+class DeliveryItemPayload(BaseModel):
+    item_index: int
+    citation_text: str
     download_url: str
     expires_on: str
     zotero_item_key: str
+
+
+class DeliveryNotificationPayload(BaseModel):
+    request_id: str
+    formcycle_submission_id: str | None = None
+    user_email: str
+    user_name: str | None = None
+    status: str
+    items: list[DeliveryItemPayload]
+
+
+class RequestItemSummary(BaseModel):
+    id: int
+    item_index: int
+    title: str
+    creators: str
+    publication_title: str
+    year: str
+    doi: str | None
+    status: str
+    metadata_source: str | None
+    zotero_item_key: str | None
+    zotero_attachment_key: str | None
+    download_url: str | None
+    expires_on: str | None
+    last_error: str | None
+    updated_at: datetime
+
+
+class RequestSummary(BaseModel):
+    request_id: str
+    formcycle_submission_id: str | None
+    user_email: str
+    user_name: str | None
+    status: str
+    delivery_days: int
+    notification_sent_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    items: list[RequestItemSummary]
+
+
+class JobEventSummary(BaseModel):
+    id: int
+    request_id: str
+    request_item_id: int | None
+    level: str
+    event_type: str
+    payload_json: str | None
+    created_at: datetime

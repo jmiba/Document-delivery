@@ -1,17 +1,29 @@
-# Document Digitization Delivery Starter
+# Document Delivery Pipeline
 
-Minimal starter stack for a university-library print-digitization pipeline:
-- FormCycle triggers orchestration when a scan is complete.
-- FastAPI enqueues a background job.
-- Worker uploads OCR PDF to Nextcloud, creates expiring share link, writes Zotero metadata, and sends delivery callback to FormCycle.
-- Budibase provides a low-code operator dashboard.
+Code-first starter for a university-library document delivery workflow:
+- FormCycle sends delivery requests to FastAPI.
+- FastAPI stores requests and requested items in SQLite.
+- A polling worker normalizes metadata, checks Zotero, waits for PDF attachments, and delivers finished PDFs through Nextcloud.
+- Streamlit provides the operator view for queue status, failures, and retries.
 
 ## Stack
 
 - FastAPI API service
-- Python worker (RQ + Redis)
-- Redis queue
-- Budibase dashboard
+- Python worker
+- SQLite
+- Streamlit operator UI
+
+## Workflow
+
+1. FormCycle posts a request with one or more bibliographic items.
+2. FastAPI persists the request in SQLite.
+3. The worker normalizes metadata through OpenAlex when configured.
+4. The worker checks Zotero for an existing matching item.
+5. If no match exists, the worker creates a new Zotero item tagged `in process`.
+6. The worker polls Zotero until a PDF attachment exists.
+7. The worker optionally runs OCR if `OCR_COMMAND_TEMPLATE` is configured.
+8. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
+9. The worker notifies FormCycle with normalized citation text plus the download links.
 
 ## Project layout
 
@@ -20,8 +32,8 @@ Minimal starter stack for a university-library print-digitization pipeline:
 ├── docker-compose.yml
 ├── .env.example
 ├── docs/
-│   ├── formcycle-forms.md
-│   └── budibase-setup.md
+│   ├── budibase-setup.md
+│   └── formcycle-forms.md
 └── services/
     └── orchestrator/
         ├── Dockerfile
@@ -29,24 +41,27 @@ Minimal starter stack for a university-library print-digitization pipeline:
         └── app/
             ├── clients.py
             ├── config.py
+            ├── db.py
             ├── jobs.py
             ├── main.py
+            ├── models.py
             ├── schemas.py
+            ├── ui.py
             └── worker.py
 ```
 
-## Quick start (Docker)
+## Quick start
 
-1. Copy env file:
+1. Create local data folders:
+
+```bash
+mkdir -p data/scans data/app
+```
+
+2. Copy env file:
 
 ```bash
 cp .env.example .env
-```
-
-2. Create a local scan drop folder:
-
-```bash
-mkdir -p data/scans
 ```
 
 3. Start services:
@@ -55,49 +70,73 @@ mkdir -p data/scans
 docker compose up --build
 ```
 
-4. Health check:
+4. Open the operator UI:
+
+```text
+http://localhost:8501
+```
+
+5. Health check:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-## Webhook payload example (FormCycle -> orchestrator)
+## FormCycle webhook payload example
+
+This is the preferred shape for new FormCycle requests:
 
 ```bash
-curl -X POST http://localhost:8000/webhooks/formcycle \
+curl -X POST http://localhost:8000/webhooks/formcycle/requests \
   -H "Content-Type: application/json" \
   -H "X-Formcycle-Secret: change-me" \
   -d '{
     "request_id": "DD-2026-0001",
     "formcycle_submission_id": "12345",
-    "event_type": "STATUS_CHANGED",
-    "status": "SCAN_COMPLETE",
     "user_email": "user@example.edu",
     "user_name": "Jane User",
-    "ocr_pdf_filename": "DD-2026-0001.pdf",
-    "bibliographic_data": {
-      "item_type": "journalArticle",
-      "title": "Digitization Pipeline Design",
-      "creators": ["Miller, Sam", "Rossi, Lea"],
-      "publication_title": "Library Technology Journal",
-      "year": "2024",
-      "volume": "12",
-      "issue": "3",
-      "pages": "44-59",
-      "doi": "10.1234/example"
-    }
+    "delivery_days": 14,
+    "items": [
+      {
+        "item_index": 0,
+        "bibliographic_data": {
+          "item_type": "journalArticle",
+          "title": "Digitization Pipeline Design",
+          "creators": ["Miller, Sam", "Rossi, Lea"],
+          "publication_title": "Library Technology Journal",
+          "year": "2024",
+          "volume": "12",
+          "issue": "3",
+          "pages": "44-59",
+          "doi": "10.1234/example"
+        }
+      }
+    ]
   }'
 ```
 
-## Notes
+The API also accepts the older single-item shape with top-level `bibliographic_data`.
 
-- `ocr_pdf_filename` must exist in `data/scans/`.
-- Default link expiry is controlled by `DEFAULT_LINK_EXPIRY_DAYS` in `.env`.
-- Upload DAV base path is controlled by `NEXTCLOUD_DAV_BASE_PATH`.
-- Default DAV base path is `/remote.php/dav/files/{username}`.
-- For Team folders via Groupfolders DAV, set for example `NEXTCLOUD_DAV_BASE_PATH=/remote.php/dav/groupfolders/12`.
-- Zotero library target is controlled by `ZOTERO_LIBRARY_TYPE` and `ZOTERO_LIBRARY_ID`.
-- For a group library, set `ZOTERO_LIBRARY_TYPE=group` and `ZOTERO_LIBRARY_ID=<group_id>`.
-- `ZOTERO_COLLECTION_KEY` is optional; leave it empty to create items in the library root.
-- FormCycle callback endpoint is configured via `FORMCYCLE_NOTIFY_URL`.
-- Budibase is exposed on `http://localhost:10000`.
+## SQLite state model
+
+The database has three runtime tables:
+- `delivery_requests`
+- `request_items`
+- `job_events`
+
+Important item statuses:
+- `PENDING_METADATA`
+- `WAITING_FOR_ATTACHMENT`
+- `PROCESSING_PDF`
+- `READY_TO_NOTIFY`
+- `DELIVERED`
+- `FAILED`
+
+## Configuration notes
+
+- `DATABASE_URL` defaults to `sqlite:////app/data/delivery.sqlite3`.
+- `OPENALEX_EMAIL` enables metadata normalization against OpenAlex. Leave it empty to skip enrichment.
+- `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
+- `FORMCYCLE_NOTIFY_URL` is optional. Leave it empty if you are not ready to call back into FormCycle yet.
+- `OCR_COMMAND_TEMPLATE` is optional. If empty, the worker uploads the original attachment PDF without OCR.
+- `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.

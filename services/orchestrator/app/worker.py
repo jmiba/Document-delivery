@@ -1,14 +1,18 @@
-from redis import Redis
-from rq import Queue, Worker
+from __future__ import annotations
+
+import time
 
 from app.config import settings
+from app.db import init_db
+from app.jobs import process_next_item
 
 
 def main() -> None:
-    redis_conn = Redis.from_url(settings.redis_url)
-    queue = Queue(settings.queue_name, connection=redis_conn)
-    worker = Worker([queue], connection=redis_conn)
-    worker.work()
+    init_db()
+    while True:
+        handled = process_next_item()
+        if not handled:
+            time.sleep(settings.worker_poll_interval_seconds)
 
 
 if __name__ == "__main__":

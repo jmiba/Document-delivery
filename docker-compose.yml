@@ -1,12 +1,4 @@
-version: "3.9"
-
 services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-
   api:
     build:
       context: ./services/orchestrator
@@ -15,11 +7,10 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
-    depends_on:
-      - redis
+      - "18000:8000"
     volumes:
       - ./data/scans:/scans:ro
+      - ./data/app:/app/data
 
   worker:
     build:
@@ -28,19 +19,22 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    depends_on:
-      - redis
     volumes:
       - ./data/scans:/scans:ro
+      - ./data/app:/app/data
 
-  budibase:
-    image: budibase/budibase:latest
+  streamlit:
+    build:
+      context: ./services/orchestrator
+    command: streamlit run app/ui.py --server.address 0.0.0.0 --server.port 8501
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
     ports:
-      - "10000:80"
+      - "18501:8501"
+    depends_on:
+      - api
     volumes:
-      - budibase_data:/data
-
-volumes:
-  redis_data:
-  budibase_data:
+      - ./data/app:/app/data

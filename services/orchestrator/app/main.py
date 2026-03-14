@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException
-from redis import Redis
-from rq import Queue
-from rq.job import Job
 
 from app.config import settings
-from app.jobs import process_digitization_job
-from app.schemas import FormCycleEvent
+from app.db import init_db
+from app.jobs import create_request, get_request_summary, list_job_events, list_requests, retry_request
+from app.schemas import FormCycleRequest
 
-app = FastAPI(title="Digitization Orchestrator")
 
-redis_conn = Redis.from_url(settings.redis_url)
-queue = Queue(settings.queue_name, connection=redis_conn)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Document Delivery Orchestrator", lifespan=lifespan)
 
 
 def _check_token(provided: str | None, expected: str | None, name: str) -> None:
@@ -25,44 +29,40 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/webhooks/formcycle")
+@app.post("/webhooks/formcycle/requests")
 def formcycle_webhook(
-    event: FormCycleEvent,
+    payload: FormCycleRequest,
     x_formcycle_secret: str | None = Header(default=None),
 ) -> dict:
     _check_token(x_formcycle_secret, settings.formcycle_webhook_secret, "FormCycle secret")
-    job = queue.enqueue(process_digitization_job, event.model_dump())
-    return {"queued": True, "job_id": job.id, "request_id": event.request_id}
+    request_id, created = create_request(payload)
+    return {"request_id": request_id, "created": created}
 
 
-@app.post("/deliver/manual")
-def manual_deliver(
-    event: FormCycleEvent,
-    x_internal_token: str | None = Header(default=None),
-) -> dict:
+@app.get("/requests")
+def get_requests(x_internal_token: str | None = Header(default=None)) -> list[dict]:
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
-    job = queue.enqueue(process_digitization_job, event.model_dump())
-    return {"queued": True, "job_id": job.id, "request_id": event.request_id}
+    return [request.model_dump(mode="json") for request in list_requests()]
 
 
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str, x_internal_token: str | None = Header(default=None)) -> dict:
+@app.get("/requests/{request_id}")
+def get_request(request_id: str, x_internal_token: str | None = Header(default=None)) -> dict:
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
-    job = Job.fetch(job_id, connection=redis_conn)
-    return {
-        "job_id": job.id,
-        "status": job.get_status(refresh=True),
-        "result": job.result,
-        "enqueued_at": str(job.enqueued_at),
-        "ended_at": str(job.ended_at),
-    }
+    request = get_request_summary(request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return request.model_dump(mode="json")
 
 
-@app.post("/jobs/{job_id}/retry")
-def retry_job(job_id: str, x_internal_token: str | None = Header(default=None)) -> dict:
+@app.get("/requests/{request_id}/events")
+def get_request_events(request_id: str, x_internal_token: str | None = Header(default=None)) -> list[dict]:
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
-    previous = Job.fetch(job_id, connection=redis_conn)
-    if not previous.args:
-        raise HTTPException(status_code=400, detail="Original job has no payload.")
-    new_job = queue.enqueue(process_digitization_job, *previous.args)
-    return {"queued": True, "job_id": new_job.id, "retry_of": job_id}
+    return [event.model_dump(mode="json") for event in list_job_events(request_id)]
+
+
+@app.post("/requests/{request_id}/retry")
+def retry_request_endpoint(request_id: str, x_internal_token: str | None = Header(default=None)) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    if not retry_request(request_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+    return {"request_id": request_id, "queued": True}

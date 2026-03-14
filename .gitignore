@@ -16,3 +16,5 @@ Icon?
 
 # Runtime data
 data/
+__pycache__/
+*.pyc
