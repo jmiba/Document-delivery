@@ -61,24 +61,26 @@ Target JSON shape:
 Purpose: receive delivery results after all items in a request are ready.
 
 Expected callback fields:
+- `token`
 - `request_id`
 - `formcycle_submission_id`
-- `user_email`
-- `user_name`
+- `recipient_email`
+- `recipient_name`
 - `status`
-- `items[]`
-
-Each callback item contains:
-- `item_index`
-- `citation_text`
-- `download_url`
-- `expires_on`
-- `zotero_item_key`
+- `mail_subject`
+- `mail_html`
+- `mail_text`
 
 Workflow on callback:
-1. Validate `Authorization: Bearer <FORMCYCLE_NOTIFY_TOKEN>` if configured.
+1. Validate `[%token%]` against the shared secret in a workflow condition.
 2. Update FormCycle process status to `DELIVERED`.
-3. Send requester email with the normalized citation text and download link for each delivered item.
+3. Send requester email with:
+- recipient: `[%recipient_email%]`
+- subject: `[%mail_subject%]`
+- HTML body: `[%mail_html%]`
+- text body: `[%mail_text%]`
+
+The app posts callback data as a standard form submission, not nested JSON.
 
 ## Suggested FormCycle statuses
 

@@ -62,6 +62,18 @@ class DeliveryNotificationPayload(BaseModel):
     items: list[DeliveryItemPayload]
 
 
+class ApproveMetadataRequest(BaseModel):
+    bibliographic_data: BibliographicData
+    review_notes: str | None = None
+
+
+class NormalizationResult(BaseModel):
+    bibliographic_data: BibliographicData
+    source: str
+    confidence: float
+    notes: str | None = None
+
+
 class RequestItemSummary(BaseModel):
     id: int
     item_index: int
@@ -69,14 +81,21 @@ class RequestItemSummary(BaseModel):
     creators: str
     publication_title: str
     year: str
+    volume: str | None
+    issue: str | None
+    pages: str | None
     doi: str | None
     status: str
     metadata_source: str | None
+    normalization_confidence: str | None
     zotero_item_key: str | None
     zotero_attachment_key: str | None
     download_url: str | None
     expires_on: str | None
     last_error: str | None
+    review_notes: str | None
+    raw_json: str | None
+    normalized_json: str | None
     updated_at: datetime
 
 
@@ -87,6 +106,7 @@ class RequestSummary(BaseModel):
     user_name: str | None
     status: str
     delivery_days: int
+    last_error: str | None
     notification_sent_at: datetime | None
     created_at: datetime
     updated_at: datetime

@@ -6,8 +6,15 @@ from fastapi import FastAPI, Header, HTTPException
 
 from app.config import settings
 from app.db import init_db
-from app.jobs import create_request, get_request_summary, list_job_events, list_requests, retry_request
-from app.schemas import FormCycleRequest
+from app.jobs import (
+    approve_metadata_item,
+    create_request,
+    get_request_summary,
+    list_job_events,
+    list_requests,
+    retry_request,
+)
+from app.schemas import ApproveMetadataRequest, FormCycleRequest
 
 
 @asynccontextmanager
@@ -66,3 +73,16 @@ def retry_request_endpoint(request_id: str, x_internal_token: str | None = Heade
     if not retry_request(request_id):
         raise HTTPException(status_code=404, detail="Request not found")
     return {"request_id": request_id, "queued": True}
+
+
+@app.post("/requests/{request_id}/items/{item_id}/approve")
+def approve_request_item(
+    request_id: str,
+    item_id: int,
+    approval: ApproveMetadataRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    if not approve_metadata_item(request_id, item_id, approval):
+        raise HTTPException(status_code=404, detail="Request item not found")
+    return {"request_id": request_id, "item_id": item_id, "approved": True}

@@ -14,6 +14,7 @@ from app.config import settings
 from app.db import session_scope
 from app.models import DeliveryRequest, JobEvent, RequestItem
 from app.schemas import (
+    ApproveMetadataRequest,
     BibliographicData,
     DeliveryItemPayload,
     DeliveryNotificationPayload,
@@ -68,6 +69,7 @@ def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
                     language=bib.language,
                     abstract_note=bib.abstract_note,
                     item_type=bib.item_type,
+                    raw_json=bib.model_dump_json(),
                     status="PENDING_METADATA",
                 )
             )
@@ -137,13 +139,59 @@ def retry_request(request_id: str) -> bool:
             return False
 
         for item in request.items:
-            if item.status == "FAILED":
+            if item.status in {"FAILED", "NEEDS_REVIEW"}:
                 item.status = "WAITING_FOR_ATTACHMENT" if item.zotero_item_key else "PENDING_METADATA"
+                item.last_error = None
+                item.next_poll_at = None
+            elif item.status == "READY_TO_NOTIFY":
                 item.last_error = None
                 item.next_poll_at = None
         request.last_error = None
         _sync_request_status(session, request)
         log_event(session, request_id=request.request_id, request_item_id=None, event_type="request_retried")
+        return True
+
+
+def approve_metadata_item(request_id: str, item_id: int, approval: ApproveMetadataRequest) -> bool:
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+
+        bib = approval.bibliographic_data
+        item.title = bib.title
+        item.creators = "; ".join(bib.creators)
+        item.publication_title = bib.publication_title
+        item.year = bib.year
+        item.volume = bib.volume
+        item.issue = bib.issue
+        item.pages = bib.pages
+        item.doi = bib.doi
+        item.language = bib.language
+        item.abstract_note = bib.abstract_note
+        item.item_type = bib.item_type
+        item.normalized_json = bib.model_dump_json()
+        item.metadata_source = "manual-review"
+        item.normalization_confidence = "1.00"
+        item.review_notes = approval.review_notes
+        item.status = "PENDING_ZOTERO"
+        item.last_error = None
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="metadata_approved",
+            payload={"review_notes": approval.review_notes},
+        )
         return True
 
 
@@ -156,13 +204,20 @@ def process_next_item() -> bool:
     try:
         if status == "PENDING_METADATA":
             _process_metadata_stage(snapshot)
+            _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
+        elif status == "PENDING_ZOTERO":
+            _process_zotero_stage(snapshot)
+            _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
         elif status == "WAITING_FOR_ATTACHMENT":
             _process_attachment_stage(snapshot)
+            _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
         elif status == "PROCESSING_PDF":
             _process_delivery_stage(snapshot)
+            _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
+        elif status == "READY_TO_NOTIFY":
+            _process_notification_stage(snapshot)
         else:
             _update_item(snapshot["item_id"], status="FAILED", last_error=f"Unsupported status {status}")
-        _maybe_finalize_request(snapshot["request_id"])
         return True
     except Exception as exc:
         _mark_item_failed(snapshot, exc)
@@ -178,14 +233,21 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             creators=item.creators,
             publication_title=item.publication_title,
             year=item.year,
+            volume=item.volume,
+            issue=item.issue,
+            pages=item.pages,
             doi=item.doi,
             status=item.status,
             metadata_source=item.metadata_source,
+            normalization_confidence=item.normalization_confidence,
             zotero_item_key=item.zotero_item_key,
             zotero_attachment_key=item.zotero_attachment_key,
             download_url=item.download_url,
             expires_on=item.expires_on,
             last_error=item.last_error,
+            review_notes=item.review_notes,
+            raw_json=item.raw_json,
+            normalized_json=item.normalized_json,
             updated_at=item.updated_at,
         )
         for item in request.items
@@ -197,6 +259,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
         user_name=request.user_name,
         status=request.status,
         delivery_days=request.delivery_days,
+        last_error=request.last_error,
         notification_sent_at=request.notification_sent_at,
         created_at=request.created_at,
         updated_at=request.updated_at,
@@ -232,11 +295,16 @@ def _claim_next_item_snapshot() -> dict | None:
             .options(joinedload(RequestItem.request))
             .where(
                 (RequestItem.status == "PENDING_METADATA")
+                | (RequestItem.status == "PENDING_ZOTERO")
                 | (
                     (RequestItem.status == "WAITING_FOR_ATTACHMENT")
                     & ((RequestItem.next_poll_at.is_(None)) | (RequestItem.next_poll_at <= now))
                 )
                 | (RequestItem.status == "PROCESSING_PDF")
+                | (
+                    (RequestItem.status == "READY_TO_NOTIFY")
+                    & ((RequestItem.next_poll_at.is_(None)) | (RequestItem.next_poll_at <= now))
+                )
             )
             .order_by(RequestItem.updated_at.asc())
         )
@@ -264,6 +332,7 @@ def _claim_next_item_snapshot() -> dict | None:
             "language": item.language,
             "abstract_note": item.abstract_note,
             "item_type": item.item_type,
+            "normalized_json": item.normalized_json,
             "zotero_item_key": item.zotero_item_key,
             "zotero_attachment_key": item.zotero_attachment_key,
         }
@@ -271,13 +340,12 @@ def _claim_next_item_snapshot() -> dict | None:
 
 def _process_metadata_stage(snapshot: dict) -> None:
     source_bib = _snapshot_to_bib(snapshot)
-    normalized_bib, metadata_source = OpenAlexClient().normalize(source_bib)
+    result = OpenAlexClient().normalize(source_bib)
+    normalized_bib = result.bibliographic_data
     citation_text = _format_citation(normalized_bib)
-    zotero = ZoteroClient()
-    existing_item = zotero.find_existing_item(normalized_bib)
+    confidence = f"{result.confidence:.2f}"
 
-    if existing_item:
-        attachment_key = zotero.find_pdf_attachment(existing_item["key"])
+    if result.confidence < settings.normalization_auto_accept_threshold:
         _update_item(
             snapshot["item_id"],
             title=normalized_bib.title,
@@ -290,17 +358,16 @@ def _process_metadata_stage(snapshot: dict) -> None:
             doi=normalized_bib.doi,
             language=normalized_bib.language,
             abstract_note=normalized_bib.abstract_note,
-            metadata_source=metadata_source,
+            metadata_source=result.source,
+            normalization_confidence=confidence,
             normalized_json=normalized_bib.model_dump_json(),
             citation_text=citation_text,
-            zotero_item_key=existing_item["key"],
-            zotero_attachment_key=attachment_key,
-            status="PROCESSING_PDF" if attachment_key else "WAITING_FOR_ATTACHMENT",
-            next_poll_at=None if attachment_key else _next_poll_time(),
+            review_notes=result.notes,
+            status="NEEDS_REVIEW",
+            next_poll_at=None,
         )
         return
 
-    zotero_item_key = zotero.create_item(normalized_bib, snapshot["request_id"])
     _update_item(
         snapshot["item_id"],
         title=normalized_bib.title,
@@ -313,9 +380,37 @@ def _process_metadata_stage(snapshot: dict) -> None:
         doi=normalized_bib.doi,
         language=normalized_bib.language,
         abstract_note=normalized_bib.abstract_note,
-        metadata_source=metadata_source,
+        metadata_source=result.source,
+        normalization_confidence=confidence,
         normalized_json=normalized_bib.model_dump_json(),
         citation_text=citation_text,
+        review_notes=result.notes,
+        status="PENDING_ZOTERO",
+        next_poll_at=None,
+    )
+
+
+def _process_zotero_stage(snapshot: dict) -> None:
+    bib = _snapshot_to_bib(snapshot)
+    zotero = ZoteroClient()
+    existing_item = zotero.find_existing_item(bib)
+
+    if existing_item:
+        attachment_key = zotero.find_pdf_attachment(existing_item["key"])
+        _update_item(
+            snapshot["item_id"],
+            citation_text=_format_citation(bib),
+            zotero_item_key=existing_item["key"],
+            zotero_attachment_key=attachment_key,
+            status="PROCESSING_PDF" if attachment_key else "WAITING_FOR_ATTACHMENT",
+            next_poll_at=None if attachment_key else _next_poll_time(),
+        )
+        return
+
+    zotero_item_key = zotero.create_item(bib, snapshot["request_id"])
+    _update_item(
+        snapshot["item_id"],
+        citation_text=_format_citation(bib),
         zotero_item_key=zotero_item_key,
         status="WAITING_FOR_ATTACHMENT",
         next_poll_at=_next_poll_time(),
@@ -373,8 +468,41 @@ def _process_delivery_stage(snapshot: dict) -> None:
         download_url=download_url,
         expires_on=expires_on,
         status="READY_TO_NOTIFY",
-        next_poll_at=None,
+        next_poll_at=datetime.now(timezone.utc),
     )
+
+
+def _process_notification_stage(snapshot: dict) -> None:
+    _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
+
+
+def _attempt_request_notification(request_id: str, request_item_id: int) -> None:
+    try:
+        _maybe_finalize_request(request_id)
+    except Exception as exc:
+        retry_at = _next_notification_retry_time()
+        with session_scope() as session:
+            request = session.scalar(
+                select(DeliveryRequest)
+                .where(DeliveryRequest.request_id == request_id)
+                .options(selectinload(DeliveryRequest.items))
+            )
+            if not request:
+                return
+            request.last_error = str(exc)
+            for item in request.items:
+                if item.status == "READY_TO_NOTIFY":
+                    item.last_error = str(exc)
+                    item.next_poll_at = retry_at
+            _sync_request_status(session, request)
+            log_event(
+                session,
+                request_id=request.request_id,
+                request_item_id=request_item_id,
+                event_type="notification_failed",
+                payload={"error": str(exc), "retry_at": retry_at.isoformat()},
+                level="ERROR",
+            )
 
 
 def _maybe_finalize_request(request_id: str) -> None:
@@ -487,6 +615,10 @@ def _sync_request_status(session, request: DeliveryRequest) -> None:
         request.status = "PROCESSED"
     elif "FAILED" in statuses:
         request.status = "ATTENTION"
+    elif request.last_error and statuses <= {"READY_TO_NOTIFY", "DELIVERED"}:
+        request.status = "NOTIFY_FAILED"
+    elif "NEEDS_REVIEW" in statuses:
+        request.status = "NEEDS_REVIEW"
     elif statuses <= {"WAITING_FOR_ATTACHMENT"}:
         request.status = "WAITING_FOR_ATTACHMENT"
     elif "READY_TO_NOTIFY" in statuses and statuses <= {"READY_TO_NOTIFY", "DELIVERED"}:
@@ -539,6 +671,10 @@ def _format_citation(bib: BibliographicData) -> str:
 
 def _next_poll_time() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=settings.attachment_poll_interval_seconds)
+
+
+def _next_notification_retry_time() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=settings.notification_retry_interval_seconds)
 
 
 def _maybe_run_ocr(source_pdf: Path) -> Path:

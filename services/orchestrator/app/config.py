@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     work_dir: str = "/app/data/work"
     worker_poll_interval_seconds: int = 15
     attachment_poll_interval_seconds: int = 300
+    notification_retry_interval_seconds: int = 900
     default_link_expiry_days: int = 14
+    normalization_auto_accept_threshold: float = 0.92
 
     openalex_email: str | None = None
 

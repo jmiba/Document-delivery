@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -8,7 +7,7 @@ from urllib.parse import quote
 import requests
 
 from app.config import settings
-from app.schemas import BibliographicData, DeliveryNotificationPayload
+from app.schemas import BibliographicData, DeliveryNotificationPayload, NormalizationResult
 
 
 def _clean(value: str | None) -> str:
@@ -20,9 +19,14 @@ class OpenAlexClient:
         self.base = "https://api.openalex.org"
         self.mailto = settings.openalex_email
 
-    def normalize(self, bib: BibliographicData) -> tuple[BibliographicData, str]:
+    def normalize(self, bib: BibliographicData) -> NormalizationResult:
         if not self.mailto:
-            return bib, "original"
+            return NormalizationResult(
+                bibliographic_data=bib,
+                source="original",
+                confidence=0.0,
+                notes="OpenAlex disabled",
+            )
 
         params = {"mailto": self.mailto, "per-page": 1}
         if bib.doi:
@@ -32,11 +36,21 @@ class OpenAlexClient:
                 timeout=20,
             )
             if response.ok:
-                return self._work_to_bib(response.json(), fallback=bib), "openalex"
+                return NormalizationResult(
+                    bibliographic_data=self._work_to_bib(response.json(), fallback=bib),
+                    source="openalex",
+                    confidence=1.0,
+                    notes="Exact DOI match",
+                )
 
         query = " ".join(part for part in [bib.title, bib.publication_title, bib.year] if part).strip()
         if not query:
-            return bib, "original"
+            return NormalizationResult(
+                bibliographic_data=bib,
+                source="original",
+                confidence=0.0,
+                notes="No lookup query available",
+            )
 
         response = requests.get(
             f"{self.base}/works",
@@ -46,8 +60,21 @@ class OpenAlexClient:
         response.raise_for_status()
         results = response.json().get("results", [])
         if not results:
-            return bib, "original"
-        return self._work_to_bib(results[0], fallback=bib), "openalex"
+            return NormalizationResult(
+                bibliographic_data=bib,
+                source="original",
+                confidence=0.0,
+                notes="No OpenAlex candidate found",
+            )
+        work = results[0]
+        normalized = self._work_to_bib(work, fallback=bib)
+        confidence = self._score_candidate(bib, normalized)
+        return NormalizationResult(
+            bibliographic_data=normalized,
+            source="openalex",
+            confidence=confidence,
+            notes="Search match",
+        )
 
     def _work_to_bib(self, work: dict, fallback: BibliographicData) -> BibliographicData:
         location = work.get("primary_location") or {}
@@ -74,6 +101,21 @@ class OpenAlexClient:
         if first_page and last_page:
             return f"{first_page}-{last_page}"
         return first_page or fallback
+
+    def _score_candidate(self, original: BibliographicData, normalized: BibliographicData) -> float:
+        score = 0.0
+        if original.doi and normalized.doi and original.doi.casefold().strip() == normalized.doi.casefold().strip():
+            return 1.0
+        if original.title.casefold().strip() == normalized.title.casefold().strip():
+            score += 0.6
+        if (
+            original.publication_title.casefold().strip()
+            and original.publication_title.casefold().strip() == normalized.publication_title.casefold().strip()
+        ):
+            score += 0.2
+        if original.year and original.year == normalized.year:
+            score += 0.2
+        return score
 
 
 class NextcloudClient:
@@ -250,14 +292,85 @@ class FormCycleClient:
         if not self.notify_url:
             return
 
-        headers = {"Content-Type": "application/json"}
+        form_payload = self._build_form_payload(payload)
+        headers = {}
         if self.notify_token:
             headers["Authorization"] = f"Bearer {self.notify_token}"
 
         response = requests.post(
             self.notify_url,
-            json=json.loads(payload.model_dump_json()),
+            data=form_payload,
             headers=headers,
             timeout=30,
         )
         response.raise_for_status()
+
+    def _build_form_payload(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
+        return {
+            "token": self.notify_token or "",
+            "request_id": payload.request_id,
+            "formcycle_submission_id": payload.formcycle_submission_id or "",
+            "recipient_email": payload.user_email,
+            "recipient_name": payload.user_name or "",
+            "status": payload.status,
+            "mail_subject": self._mail_subject(payload),
+            "mail_html": self._mail_html(payload),
+            "mail_text": self._mail_text(payload),
+        }
+
+    def _mail_subject(self, payload: DeliveryNotificationPayload) -> str:
+        return f"Ihre Dokumentlieferung ist bereit ({payload.request_id})"
+
+    def _mail_html(self, payload: DeliveryNotificationPayload) -> str:
+        greeting_name = payload.user_name or "Guten Tag"
+        item_blocks = []
+        for item in payload.items:
+            item_blocks.append(
+                (
+                    "<p>"
+                    f"<strong>Titel {item.item_index + 1}</strong><br>"
+                    f"{self._escape_html(item.citation_text)}<br>"
+                    f'<a href="{self._escape_html(item.download_url)}">PDF herunterladen</a><br>'
+                    f"Link gueltig bis: {self._escape_html(item.expires_on)}"
+                    "</p>"
+                )
+            )
+        items_html = "".join(item_blocks)
+        return (
+            f"<p>Guten Tag {self._escape_html(greeting_name)},</p>"
+            "<p>die angeforderte Dokumentlieferung ist bereit.</p>"
+            f"{items_html}"
+            "<p>Mit freundlichen Gruessen<br>Ihre Bibliothek</p>"
+        )
+
+    def _mail_text(self, payload: DeliveryNotificationPayload) -> str:
+        greeting_name = payload.user_name or ""
+        blocks = []
+        for item in payload.items:
+            blocks.append(
+                "\n".join(
+                    [
+                        f"Titel {item.item_index + 1}",
+                        item.citation_text,
+                        f"Download: {item.download_url}",
+                        f"Link gueltig bis: {item.expires_on}",
+                    ]
+                )
+            )
+        items_text = "\n\n".join(blocks)
+        greeting_line = f"Guten Tag {greeting_name},".strip().rstrip(",") + ","
+        return (
+            f"{greeting_line}\n\n"
+            "die angeforderte Dokumentlieferung ist bereit.\n\n"
+            f"{items_text}\n\n"
+            "Mit freundlichen Gruessen\n"
+            "Ihre Bibliothek"
+        )
+
+    def _escape_html(self, value: str) -> str:
+        return (
+            value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
