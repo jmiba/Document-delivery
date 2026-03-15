@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from xml.etree import ElementTree as ET
 
 import requests
 
@@ -26,6 +27,24 @@ class ResolutionMatch:
 
 def _clean(value: str | None) -> str:
     return (value or "").strip()
+
+
+def _string_value(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        for item in value:
+            resolved = _string_value(item)
+            if resolved:
+                return resolved
+        return ""
+    if isinstance(value, dict):
+        for key in ("label", "name", "value", "id"):
+            resolved = _string_value(value.get(key))
+            if resolved:
+                return resolved
+        return ""
+    return str(value).strip() if value is not None else ""
 
 
 def _normalize_text(value: str) -> str:
@@ -87,6 +106,96 @@ def _first_author_last_name(bib: BibliographicData) -> str:
     if "," in author:
         return _normalize_text(author.split(",", 1)[0].strip())
     return _normalize_text(author.split()[-1])
+
+
+def _year_from_text(value: str | None) -> str:
+    import re
+
+    match = re.search(r"\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b", value or "")
+    return match.group(1) if match else ""
+
+
+def _crossref_people(people: list[dict] | None) -> list[str]:
+    result: list[str] = []
+    for person in people or []:
+        given = _clean(person.get("given"))
+        family = _clean(person.get("family"))
+        literal = _clean(person.get("literal"))
+        if family and given:
+            result.append(f"{family}, {given}")
+        elif family:
+            result.append(family)
+        elif literal:
+            result.append(literal)
+    return result
+
+
+def _search_title_for_catalog(bib: BibliographicData) -> str:
+    if bib.item_type == "bookSection" and bib.publication_title:
+        return bib.publication_title
+    return bib.title
+
+
+def _build_lobid_query(bib: BibliographicData) -> str:
+    title = _search_title_for_catalog(bib)
+    tokens = [_normalize_text(part) for part in title.split() if len(_normalize_text(part)) >= 3]
+    title_parts = [f"title:{token}" for token in tokens[:4] if token]
+    clauses = [f"({' AND '.join(title_parts)})"] if title_parts else []
+    author_last_name = _first_author_last_name(bib)
+    if author_last_name and bib.item_type != "bookSection":
+        clauses.append(f"contribution.agent.label:{author_last_name}")
+    return " AND ".join(clauses)
+
+
+def _extract_isbn_from_identifiers(identifiers: list[object]) -> str | None:
+    import re
+
+    for identifier in identifiers:
+        if isinstance(identifier, dict):
+            raw_value = (
+                identifier.get("value")
+                or identifier.get("id")
+                or identifier.get("label")
+                or identifier.get("identifier")
+                or ""
+            )
+        else:
+            raw_value = str(identifier or "")
+        cleaned = re.sub(r"[^0-9Xx]", "", raw_value.replace("urn:isbn:", "").replace("isbn:", ""))
+        if len(cleaned) in {10, 13}:
+            return cleaned.upper()
+    return None
+
+
+def _parse_sru_dc_records(xml_text: str) -> list[dict]:
+    ns_dc = "{http://purl.org/dc/elements/1.1/}"
+    ns_srw = "{http://www.loc.gov/zing/srw/}"
+    root = ET.fromstring(xml_text)
+    parsed: list[dict] = []
+    for record in root.findall(".//{*}record"):
+        identifiers = [
+            (node.text or "").strip()
+            for node in record.findall(f".//{ns_dc}identifier")
+            if (node.text or "").strip()
+        ]
+        title = (record.findtext(f".//{ns_dc}title") or "").strip()
+        creator = (record.findtext(f".//{ns_dc}creator") or "").strip()
+        date = (record.findtext(f".//{ns_dc}date") or "").strip()
+        publisher = (record.findtext(f".//{ns_dc}publisher") or "").strip()
+        record_id = (record.findtext(f".//{ns_srw}recordIdentifier") or record.findtext(".//{*}recordIdentifier") or "").strip()
+        if not any([title, creator, date, publisher, identifiers]):
+            continue
+        parsed.append(
+            {
+                "title": title,
+                "creator": creator,
+                "date": date,
+                "publisher": publisher,
+                "identifiers": identifiers,
+                "record_id": record_id or None,
+            }
+        )
+    return parsed
 
 
 def _score_candidate(
@@ -156,12 +265,18 @@ def _make_bib(
     *,
     title: str | None = None,
     creators: list[str] | None = None,
+    editors: list[str] | None = None,
     publication_title: str | None = None,
     year: str | None = None,
     volume: str | None = None,
     issue: str | None = None,
     pages: str | None = None,
     doi: str | None = None,
+    publisher: str | None = None,
+    place: str | None = None,
+    series: str | None = None,
+    edition: str | None = None,
+    isbn: str | None = None,
     abstract_note: str | None = None,
 ) -> BibliographicData:
     item_type = fallback.item_type
@@ -170,12 +285,18 @@ def _make_bib(
         item_type=item_type,
         title=title or fallback.title,
         creators=creators or fallback.creators,
+        editors=editors or fallback.editors,
         publication_title=publication_title or fallback.publication_title,
         year=year or fallback.year,
         volume=volume or fallback.volume,
         issue=resolved_issue if resolved_issue is not None else fallback.issue if item_type == "journalArticle" else None,
         pages=pages or fallback.pages,
         doi=_normalize_doi(doi) or fallback.doi,
+        publisher=publisher or fallback.publisher,
+        place=place or fallback.place,
+        series=series or fallback.series,
+        edition=edition or fallback.edition,
+        isbn=isbn or fallback.isbn,
         language=fallback.language,
         abstract_note=abstract_note or fallback.abstract_note,
     )
@@ -333,29 +454,30 @@ class CrossrefResolver:
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
 
-        creators = []
-        for creator in item.get("author") or []:
-            given = _clean(creator.get("given"))
-            family = _clean(creator.get("family"))
-            literal = _clean(creator.get("literal"))
-            if family and given:
-                creators.append(f"{family}, {given}")
-            elif family:
-                creators.append(family)
-            elif literal:
-                creators.append(literal)
+        creators = _crossref_people(item.get("author"))
+        editors = _crossref_people(item.get("editor"))
+        isbn = item.get("ISBN")
+        resolved_isbn = isbn[0] if isinstance(isbn, list) and isbn else isbn or None
+        collection_title = item.get("collection-title")
+        resolved_series = collection_title[0] if isinstance(collection_title, list) and collection_title else collection_title
 
         if score >= 0.8:
             candidate = _make_bib(
                 bib,
                 title=resolved_title,
                 creators=creators or None,
+                editors=editors or None,
                 publication_title=container_title or None,
                 year=candidate_year or None,
                 volume=_clean(item.get("volume")) or None,
                 issue=_clean(item.get("issue")) or None,
                 pages=_clean(item.get("page")) or None,
                 doi=item.get("DOI"),
+                publisher=_clean(item.get("publisher")) or None,
+                place=_clean(item.get("publisher-location")) or None,
+                series=_clean(resolved_series) or None,
+                edition=_clean(item.get("edition")) or _clean(item.get("edition-number")) or None,
+                isbn=_clean(resolved_isbn) or None,
             )
             return ResolutionMatch(
                 "crossref",
@@ -489,6 +611,7 @@ class OpenAlexResolver:
             first_page = _clean(biblio.get("first_page"))
             last_page = _clean(biblio.get("last_page"))
             pages = f"{first_page}-{last_page}" if first_page and last_page else first_page or bib.pages
+            ids = work.get("ids") or {}
             candidate = _make_bib(
                 bib,
                 title=title,
@@ -499,6 +622,7 @@ class OpenAlexResolver:
                 issue=_clean(biblio.get("issue")) or None,
                 pages=pages or None,
                 doi=work.get("doi"),
+                isbn=_clean(ids.get("isbn")) or None,
             )
             return ResolutionMatch(
                 "openalex",
@@ -522,16 +646,208 @@ class OpenAlexResolver:
         )
 
 
+class LobidResolver:
+    def resolve(self, bib: BibliographicData) -> ResolutionMatch:
+        if bib.item_type not in {"bookSection", "book"}:
+            return ResolutionMatch("lobid", "not_found", 0.0, "skipped for item type")
+        query = _build_lobid_query(bib)
+        if not query:
+            return ResolutionMatch("lobid", "not_found", 0.0, "missing title")
+
+        response = requests.get(
+            "https://lobid.org/resources/search",
+            params={"q": query, "size": 5, "format": "json"},
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        if not response.ok:
+            return ResolutionMatch("lobid", "error", 0.0, f"search failed (HTTP {response.status_code})")
+
+        results = response.json().get("member", [])
+        if not results:
+            return ResolutionMatch("lobid", "not_found", 0.0, "no results")
+
+        search_title = _search_title_for_catalog(bib)
+        best: tuple[dict, float] | None = None
+        for item in results:
+            title_value = item.get("title")
+            candidate_title = title_value[0] if isinstance(title_value, list) and title_value else title_value or ""
+            candidate_year = ""
+            publication = item.get("publication")
+            nodes = publication if isinstance(publication, list) else [publication] if publication else []
+            for node in nodes:
+                candidate_year = _year_from_text((node or {}).get("startDate") or (node or {}).get("dateStatement"))
+                if candidate_year:
+                    break
+            title_score = _dice_coefficient(search_title, candidate_title)
+            year_score = 1.0 if bib.year and candidate_year and bib.year == candidate_year else 0.0
+            combined = 0.9 * title_score + 0.1 * year_score
+            if best is None or combined > best[1]:
+                best = (item, combined)
+
+        if not best:
+            return ResolutionMatch("lobid", "not_found", 0.0, "no usable results")
+
+        item, score = best
+        if score < 0.8:
+            return ResolutionMatch("lobid", "not_found", score, f"best score too low ({score:.2f})")
+
+        title_value = item.get("title")
+        candidate_title = title_value[0] if isinstance(title_value, list) and title_value else title_value or ""
+        publication = item.get("publication")
+        nodes = publication if isinstance(publication, list) else [publication] if publication else []
+        candidate_year = ""
+        publisher = None
+        place = None
+        for node in nodes:
+            node = node or {}
+            candidate_year = candidate_year or _year_from_text(_string_value(node.get("startDate") or node.get("dateStatement")))
+            publisher = publisher or _string_value(node.get("publisher")) or None
+            place = place or _string_value(node.get("place")) or None
+        edition = _string_value(item.get("edition")) or None
+        series = _string_value(item.get("series")) or None
+        isbn = _extract_isbn_from_identifiers(item.get("identifiedBy") if isinstance(item.get("identifiedBy"), list) else [])
+
+        if bib.item_type == "bookSection":
+            candidate = _make_bib(
+                bib,
+                publication_title=candidate_title or None,
+                year=candidate_year or None,
+                publisher=publisher or None,
+                place=place or None,
+                series=series or None,
+                edition=edition or None,
+                isbn=isbn or None,
+            )
+        else:
+            candidate = _make_bib(
+                bib,
+                title=candidate_title or None,
+                year=candidate_year or None,
+                publisher=publisher or None,
+                place=place or None,
+                series=series or None,
+                edition=edition or None,
+                isbn=isbn or None,
+            )
+
+        return ResolutionMatch(
+            "lobid",
+            "validated",
+            score,
+            f"matched (score {score:.2f})",
+            candidate,
+            title_score=_dice_coefficient(search_title, candidate_title),
+            container_score=_dice_coefficient(bib.publication_title or "", candidate_title if bib.item_type == "bookSection" else ""),
+            year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
+        )
+
+
+class GbVResolver:
+    def __init__(self) -> None:
+        self.base_url = settings.gbv_sru_url.strip()
+
+    def resolve(self, bib: BibliographicData) -> ResolutionMatch:
+        if bib.item_type not in {"bookSection", "book"}:
+            return ResolutionMatch("gbv", "not_found", 0.0, "skipped for item type")
+
+        search_title = _search_title_for_catalog(bib)
+        title_tokens = [_normalize_text(token) for token in search_title.split() if len(_normalize_text(token)) >= 3][:5]
+        if not title_tokens:
+            return ResolutionMatch("gbv", "not_found", 0.0, "missing title")
+
+        title_query = " and ".join(f"pica.tit={token}" for token in title_tokens)
+        author_last_name = _first_author_last_name(bib)
+        author_query = f" and pica.per={author_last_name}" if author_last_name and bib.item_type != "bookSection" else ""
+        query = f"{title_query}{author_query}"
+
+        response = requests.get(
+            self.base_url,
+            params={
+                "version": "1.1",
+                "operation": "searchRetrieve",
+                "query": query,
+                "maximumRecords": "5",
+                "recordSchema": "dc",
+            },
+            headers={"Accept": "application/xml"},
+            timeout=30,
+        )
+        if not response.ok:
+            return ResolutionMatch("gbv", "error", 0.0, f"search failed (HTTP {response.status_code})")
+        if not response.text.strip():
+            return ResolutionMatch("gbv", "error", 0.0, "empty SRU response")
+
+        parsed = _parse_sru_dc_records(response.text)
+        if not parsed:
+            return ResolutionMatch("gbv", "not_found", 0.0, "no results")
+
+        best: tuple[dict, float] | None = None
+        for item in parsed:
+            candidate_year = _year_from_text(item.get("date"))
+            candidate_surname = item.get("creator", "").split(",")[0] or item.get("creator", "").split(" ")[-1]
+            title_score = _dice_coefficient(search_title, item.get("title") or "")
+            author_score = 1.0 if author_last_name and candidate_surname and author_last_name == _normalize_text(candidate_surname) else 0.0
+            score = 0.9 * title_score + 0.1 * author_score
+            if best is None or score > best[1]:
+                best = (item, score)
+
+        if not best:
+            return ResolutionMatch("gbv", "not_found", 0.0, "no usable results")
+
+        item, score = best
+        if score < 0.8:
+            return ResolutionMatch("gbv", "not_found", score, f"best score too low ({score:.2f})")
+
+        candidate_year = _year_from_text(item.get("date"))
+        isbn = _extract_isbn_from_identifiers(item.get("identifiers") or [])
+        publisher = _clean(item.get("publisher")) or None
+
+        if bib.item_type == "bookSection":
+            candidate = _make_bib(
+                bib,
+                publication_title=_clean(item.get("title")) or None,
+                year=candidate_year or None,
+                publisher=publisher,
+                isbn=isbn or None,
+            )
+        else:
+            candidate = _make_bib(
+                bib,
+                title=_clean(item.get("title")) or None,
+                year=candidate_year or None,
+                publisher=publisher,
+                isbn=isbn or None,
+            )
+
+        return ResolutionMatch(
+            "gbv",
+            "validated",
+            score,
+            f"matched (score {score:.2f})",
+            candidate,
+            title_score=_dice_coefficient(search_title, item.get("title") or ""),
+            container_score=_dice_coefficient(bib.publication_title or "", item.get("title") or "") if bib.item_type == "bookSection" else 0.0,
+            year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
+        )
+
+
 class ResolutionService:
     def __init__(self) -> None:
         self.priorities = {
+            "lobid": settings.resolution_priority_lobid,
+            "gbv": settings.resolution_priority_gbv,
             "crossref": settings.resolution_priority_crossref,
             "openalex": settings.resolution_priority_openalex,
         }
-        self.resolvers = [CrossrefResolver(), OpenAlexResolver()]
+        self.base_resolvers = [CrossrefResolver(), OpenAlexResolver()]
+        self.book_resolvers = [LobidResolver(), GbVResolver()]
 
     def normalize(self, bib: BibliographicData) -> NormalizationResult:
-        matches = [resolver.resolve(bib) for resolver in self.resolvers]
+        resolvers = list(self.base_resolvers)
+        if bib.item_type in {"bookSection", "book"}:
+            resolvers = [*self.book_resolvers, *resolvers]
+        matches = [resolver.resolve(bib) for resolver in resolvers]
         evidence = [
             ResolutionEvidence(
                 source=match.source,

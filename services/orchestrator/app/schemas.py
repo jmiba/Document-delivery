@@ -9,12 +9,18 @@ class BibliographicData(BaseModel):
     item_type: str = "journalArticle"
     title: str
     creators: list[str] = Field(default_factory=list)
+    editors: list[str] = Field(default_factory=list)
     publication_title: str
     year: str
     volume: str | None = None
     issue: str | None = None
     pages: str | None = None
     doi: str | None = None
+    publisher: str | None = None
+    place: str | None = None
+    series: str | None = None
+    edition: str | None = None
+    isbn: str | None = None
     language: str | None = None
     abstract_note: str | None = None
 
@@ -91,12 +97,18 @@ class RequestItemSummary(BaseModel):
     item_type: str
     title: str
     creators: str
+    editors: str | None
     publication_title: str
     year: str
     volume: str | None
     issue: str | None
     pages: str | None
     doi: str | None
+    publisher: str | None
+    place: str | None
+    series: str | None
+    edition: str | None
+    isbn: str | None
     status: str
     metadata_source: str | None
     normalization_confidence: str | None

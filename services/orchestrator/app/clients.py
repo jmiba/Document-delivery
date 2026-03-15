@@ -18,6 +18,71 @@ def _clean(value: str | None) -> str:
     return (value or "").strip()
 
 
+def _normalize_text(value: str | None) -> str:
+    return (
+        _clean(value)
+        .casefold()
+        .replace("'", "")
+        .replace('"', "")
+        .replace("’", "")
+        .replace("`", "")
+    )
+
+
+def _normalize_doi(raw: str | None) -> str:
+    if not raw:
+        return ""
+    doi = raw.strip()
+    lowered = doi.casefold()
+    for prefix in ("https://doi.org/", "http://doi.org/"):
+        if lowered.startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    if doi.casefold().startswith("doi:"):
+        doi = doi[4:]
+    return doi.strip()
+
+
+def _dice_coefficient(left: str | None, right: str | None) -> float:
+    left_normalized = "".join(ch for ch in _normalize_text(left) if ch.isalnum())
+    right_normalized = "".join(ch for ch in _normalize_text(right) if ch.isalnum())
+    if not left_normalized or not right_normalized:
+        return 0.0
+    if left_normalized == right_normalized:
+        return 1.0
+    if len(left_normalized) < 2 or len(right_normalized) < 2:
+        return 0.0
+
+    bigrams: dict[str, int] = {}
+    for idx in range(len(left_normalized) - 1):
+        bigram = left_normalized[idx:idx + 2]
+        bigrams[bigram] = bigrams.get(bigram, 0) + 1
+
+    intersection = 0
+    for idx in range(len(right_normalized) - 1):
+        bigram = right_normalized[idx:idx + 2]
+        count = bigrams.get(bigram, 0)
+        if count > 0:
+            bigrams[bigram] = count - 1
+            intersection += 1
+
+    return (2 * intersection) / ((len(left_normalized) - 1) + (len(right_normalized) - 1))
+
+
+def _extract_year(raw: str | None) -> str:
+    match = re.search(r"\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b", raw or "")
+    return match.group(1) if match else ""
+
+
+def _creator_last_name(value: str | None) -> str:
+    cleaned = _clean(value)
+    if not cleaned:
+        return ""
+    if "," in cleaned:
+        return _normalize_text(cleaned.split(",", 1)[0])
+    return _normalize_text(cleaned.split()[-1])
+
+
 def _normalize_language(value: str | None) -> str:
     normalized = _clean(value).lower()
     if normalized.startswith("de"):
@@ -203,18 +268,26 @@ class ZoteroClient:
         self.in_process_tag = settings.zotero_in_process_tag
 
     def find_existing_item(self, bib: BibliographicData) -> dict | None:
-        candidates = self._search_items(bib.doi or bib.title)
-        normalized_title = bib.title.casefold().strip()
-        normalized_doi = (bib.doi or "").casefold().strip()
-        for item in candidates:
+        candidates: dict[str, dict] = {}
+        for query in self._candidate_queries(bib):
+            for item in self._search_items(query):
+                key = item.get("key")
+                if key:
+                    candidates[key] = item
+
+        best_match: dict | None = None
+        best_score = 0.0
+        for item in candidates.values():
             data = item.get("data", {})
             if data.get("itemType") == "attachment":
                 continue
-            if normalized_doi and (data.get("DOI") or "").casefold().strip() == normalized_doi:
-                return {"key": item.get("key"), "data": data}
-            if (data.get("title") or "").casefold().strip() == normalized_title:
-                return {"key": item.get("key"), "data": data}
-        return None
+            match = self._score_existing_item(bib, item)
+            if not match:
+                continue
+            if match["score"] > best_score:
+                best_score = match["score"]
+                best_match = match
+        return best_match
 
     def create_item(self, bib: BibliographicData, request_id: str) -> str:
         endpoint = f"{self.base}/items"
@@ -298,9 +371,96 @@ class ZoteroClient:
         response.raise_for_status()
         return response.json()
 
+    def _candidate_queries(self, bib: BibliographicData) -> list[str]:
+        first_author = bib.creators[0] if bib.creators else ""
+        queries = [
+            _normalize_doi(bib.doi),
+            bib.title,
+            bib.publication_title,
+            " ".join(part for part in [bib.title, first_author] if part).strip(),
+            " ".join(part for part in [first_author, bib.year] if part).strip(),
+        ]
+        seen: set[str] = set()
+        result: list[str] = []
+        for query in queries:
+            cleaned = _clean(query)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                result.append(cleaned)
+        return result
+
+    def _score_existing_item(self, bib: BibliographicData, item: dict) -> dict | None:
+        data = item.get("data", {})
+        item_type = self._normalize_item_type(data.get("itemType"))
+        expected_type = self._normalize_item_type(bib.item_type)
+        if item_type != expected_type:
+            return None
+
+        normalized_doi = _normalize_doi(bib.doi)
+        candidate_doi = _normalize_doi(data.get("DOI"))
+        if normalized_doi and candidate_doi and normalized_doi == candidate_doi:
+            return {
+                "key": item.get("key"),
+                "data": data,
+                "score": 1.0,
+                "reason": "exact_doi",
+            }
+
+        title_score = _dice_coefficient(bib.title, data.get("title"))
+        container_score = _dice_coefficient(bib.publication_title, self._container_title_from_item(data))
+        author_score = self._author_score(bib, data)
+        year_score = 1.0 if bib.year and _extract_year(data.get("date")) == bib.year else 0.0
+
+        weighted_parts: list[tuple[float, float]] = []
+        if bib.title:
+            weighted_parts.append((title_score, 0.6))
+        if bib.publication_title:
+            weighted_parts.append((container_score, 0.2))
+        if bib.creators:
+            weighted_parts.append((author_score, 0.15))
+        if bib.year:
+            weighted_parts.append((year_score, 0.05))
+        if not weighted_parts:
+            return None
+
+        total_weight = sum(weight for _, weight in weighted_parts)
+        score = sum(part * weight for part, weight in weighted_parts) / total_weight
+        exact_title = _normalize_text(bib.title) == _normalize_text(data.get("title"))
+        if exact_title and (container_score >= 0.75 or author_score >= 1.0 or year_score >= 1.0):
+            reason = "exact_title_plus_secondary"
+        elif score >= 0.9:
+            reason = "high_similarity"
+        elif score >= 0.82 and title_score >= 0.92 and (container_score >= 0.6 or author_score >= 1.0 or year_score >= 1.0):
+            reason = "strong_bibliographic_match"
+        else:
+            return None
+
+        return {
+            "key": item.get("key"),
+            "data": data,
+            "score": round(score, 4),
+            "reason": reason,
+        }
+
+    def _author_score(self, bib: BibliographicData, data: dict) -> float:
+        if not bib.creators:
+            return 0.0
+        target_last_name = _creator_last_name(bib.creators[0])
+        if not target_last_name:
+            return 0.0
+        for creator in data.get("creators") or []:
+            candidate = _clean(creator.get("lastName")) or _clean(creator.get("name"))
+            if candidate and _creator_last_name(candidate) == target_last_name:
+                return 1.0
+        return 0.0
+
+    def _container_title_from_item(self, data: dict) -> str:
+        return _clean(data.get("publicationTitle")) or _clean(data.get("bookTitle"))
+
     def _item_payload(self, bib: BibliographicData, request_id: str) -> dict:
         item_type = self._normalize_item_type(bib.item_type)
         creators = [{"creatorType": "author", "name": creator} for creator in bib.creators]
+        creators.extend({"creatorType": "editor", "name": editor} for editor in bib.editors)
         extra_lines = [f"Request-ID: {request_id}"]
         item = {
             "itemType": item_type,
@@ -321,13 +481,29 @@ class ZoteroClient:
         elif item_type == "bookSection":
             item["bookTitle"] = bib.publication_title
             item["pages"] = bib.pages or ""
+            item["publisher"] = bib.publisher or ""
+            item["place"] = bib.place or ""
+            item["ISBN"] = bib.isbn or ""
             if bib.volume:
                 extra_lines.append(f"Container-Volume: {bib.volume}")
+            if bib.series:
+                extra_lines.append(f"Series: {bib.series}")
+            if bib.edition:
+                extra_lines.append(f"Edition: {bib.edition}")
         else:
             item["publicationTitle"] = bib.publication_title
             item["volume"] = bib.volume or ""
             item["issue"] = bib.issue or ""
             item["pages"] = bib.pages or ""
+        if item_type in {"book", "bookSection", "conferencePaper", "report"}:
+            if bib.publisher:
+                item["publisher"] = bib.publisher
+            if bib.place:
+                item["place"] = bib.place
+        if item_type == "book":
+            item["edition"] = bib.edition or ""
+            item["ISBN"] = bib.isbn or ""
+            item["series"] = bib.series or ""
         item["extra"] = "\n".join(extra_lines)
         if self.collection_key:
             item["collections"] = [self.collection_key]

@@ -15,8 +15,11 @@ class Settings(BaseSettings):
 
     openalex_email: str | None = None
     crossref_mailto: str | None = None
-    resolution_priority_crossref: int = 1
-    resolution_priority_openalex: int = 2
+    gbv_sru_url: str = "https://sru.k10plus.de/gvk"
+    resolution_priority_lobid: int = 1
+    resolution_priority_gbv: int = 2
+    resolution_priority_crossref: int = 3
+    resolution_priority_openalex: int = 4
 
     nextcloud_base_url: str
     nextcloud_username: str

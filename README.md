@@ -28,6 +28,21 @@ Code-first starter for a university-library document delivery workflow:
 10. The worker sends the final requester email directly through SMTP when configured.
 11. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
 
+## Architecture
+
+The active system has four roles:
+
+- FormCycle handles intake and later user follow-up forms.
+- FastAPI ingests requests and exposes operator endpoints.
+- SQLite stores request state, item state, and job events.
+- The worker performs metadata resolution, Zotero coordination, OCR, Nextcloud delivery, and SMTP notification.
+
+The operator workflow is code-first:
+
+- Streamlit is the review and retry interface.
+- metadata resolution combines Crossref, OpenAlex, and, for book-like items, Lobid and GBV/K10plus
+- delivery mails are sent directly by the app, not by an external low-code workflow
+
 ## Project layout
 
 ```text
@@ -35,7 +50,7 @@ Code-first starter for a university-library document delivery workflow:
 ├── docker-compose.yml
 ├── .env.example
 ├── docs/
-│   ├── budibase-setup.md
+│   ├── architecture.md
 │   └── formcycle-forms.md
 └── services/
     └── orchestrator/
@@ -144,7 +159,8 @@ Important item statuses:
 - `DATABASE_URL` defaults to `sqlite:////app/data/delivery.sqlite3`.
 - `OPENALEX_EMAIL` enables OpenAlex as a normalization source.
 - `CROSSREF_MAILTO` is optional but recommended for polite Crossref API usage.
-- `RESOLUTION_PRIORITY_CROSSREF` and `RESOLUTION_PRIORITY_OPENALEX` control which validated source wins when both match.
+- `GBV_SRU_URL` configures the K10plus/GBV SRU endpoint used for book and book-section lookups.
+- `RESOLUTION_PRIORITY_LOBID`, `RESOLUTION_PRIORITY_GBV`, `RESOLUTION_PRIORITY_CROSSREF`, and `RESOLUTION_PRIORITY_OPENALEX` control which validated source wins when multiple sources match. For `bookSection`, Lobid and GBV are evaluated ahead of Crossref/OpenAlex by default.
 - `NORMALIZATION_AUTO_ACCEPT_THRESHOLD` controls when a metadata match can bypass human review.
 - `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
 - `CITATION_STYLE` controls the CSL style Zotero uses when the app renders bibliography entries for the delivery mail.

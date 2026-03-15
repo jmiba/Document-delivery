@@ -91,12 +91,18 @@ def _append_request_items(request: DeliveryRequest, item_payloads: list) -> int:
                 item_index=next_index,
                 title=bib.title,
                 creators="; ".join(bib.creators),
+                editors="; ".join(bib.editors) if bib.editors else None,
                 publication_title=bib.publication_title,
                 year=bib.year,
                 volume=bib.volume,
                 issue=bib.issue,
                 pages=bib.pages,
                 doi=bib.doi,
+                publisher=bib.publisher,
+                place=bib.place,
+                series=bib.series,
+                edition=bib.edition,
+                isbn=bib.isbn,
                 language=bib.language,
                 abstract_note=bib.abstract_note,
                 item_type=bib.item_type,
@@ -194,12 +200,18 @@ def approve_metadata_item(request_id: str, item_id: int, approval: ApproveMetada
         bib = approval.bibliographic_data
         item.title = bib.title
         item.creators = "; ".join(bib.creators)
+        item.editors = "; ".join(bib.editors) if bib.editors else None
         item.publication_title = bib.publication_title
         item.year = bib.year
         item.volume = bib.volume
         item.issue = bib.issue
         item.pages = bib.pages
         item.doi = bib.doi
+        item.publisher = bib.publisher
+        item.place = bib.place
+        item.series = bib.series
+        item.edition = bib.edition
+        item.isbn = bib.isbn
         item.language = bib.language
         item.abstract_note = bib.abstract_note
         item.item_type = bib.item_type
@@ -258,12 +270,18 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             item_type=item.item_type,
             title=item.title,
             creators=item.creators,
+            editors=item.editors,
             publication_title=item.publication_title,
             year=item.year,
             volume=item.volume,
             issue=item.issue,
             pages=item.pages,
             doi=item.doi,
+            publisher=item.publisher,
+            place=item.place,
+            series=item.series,
+            edition=item.edition,
+            isbn=item.isbn,
             status=item.status,
             metadata_source=item.metadata_source,
             normalization_confidence=item.normalization_confidence,
@@ -360,12 +378,18 @@ def _claim_next_item_snapshot() -> dict | None:
             "item_index": item.item_index,
             "title": item.title,
             "creators": item.creators,
+            "editors": item.editors,
             "publication_title": item.publication_title,
             "year": item.year,
             "volume": item.volume,
             "issue": item.issue,
             "pages": item.pages,
             "doi": item.doi,
+            "publisher": item.publisher,
+            "place": item.place,
+            "series": item.series,
+            "edition": item.edition,
+            "isbn": item.isbn,
             "language": item.language,
             "abstract_note": item.abstract_note,
             "item_type": item.item_type,
@@ -381,18 +405,25 @@ def _process_metadata_stage(snapshot: dict) -> None:
     normalized_bib = result.bibliographic_data
     citation_text = _format_citation(normalized_bib)
     confidence = f"{result.confidence:.2f}"
+    _log_resolution_events(snapshot["request_id"], snapshot["item_id"], result)
 
     if result.confidence < settings.normalization_auto_accept_threshold:
         _update_item(
             snapshot["item_id"],
             title=normalized_bib.title,
             creators="; ".join(normalized_bib.creators),
+            editors="; ".join(normalized_bib.editors) if normalized_bib.editors else None,
             publication_title=normalized_bib.publication_title,
             year=normalized_bib.year,
             volume=normalized_bib.volume,
             issue=normalized_bib.issue,
             pages=normalized_bib.pages,
             doi=normalized_bib.doi,
+            publisher=normalized_bib.publisher,
+            place=normalized_bib.place,
+            series=normalized_bib.series,
+            edition=normalized_bib.edition,
+            isbn=normalized_bib.isbn,
             language=normalized_bib.language,
             abstract_note=normalized_bib.abstract_note,
             metadata_source=result.source,
@@ -413,12 +444,18 @@ def _process_metadata_stage(snapshot: dict) -> None:
         snapshot["item_id"],
         title=normalized_bib.title,
         creators="; ".join(normalized_bib.creators),
+        editors="; ".join(normalized_bib.editors) if normalized_bib.editors else None,
         publication_title=normalized_bib.publication_title,
         year=normalized_bib.year,
         volume=normalized_bib.volume,
         issue=normalized_bib.issue,
         pages=normalized_bib.pages,
         doi=normalized_bib.doi,
+        publisher=normalized_bib.publisher,
+        place=normalized_bib.place,
+        series=normalized_bib.series,
+        edition=normalized_bib.edition,
+        isbn=normalized_bib.isbn,
         language=normalized_bib.language,
         abstract_note=normalized_bib.abstract_note,
         metadata_source=result.source,
@@ -454,6 +491,13 @@ def _process_zotero_stage(snapshot: dict) -> None:
     existing_item = zotero.find_existing_item(bib)
 
     if existing_item:
+        _log_zotero_match_event(
+            snapshot["request_id"],
+            snapshot["item_id"],
+            existing_item["key"],
+            existing_item.get("score"),
+            existing_item.get("reason"),
+        )
         attachment_key = zotero.find_pdf_attachment(existing_item["key"])
         _update_item(
             snapshot["item_id"],
@@ -647,6 +691,60 @@ def _mark_item_failed(snapshot: dict, exc: Exception) -> None:
         )
 
 
+def _log_resolution_events(request_id: str, request_item_id: int, result) -> None:
+    with session_scope() as session:
+        winner_source = result.source if result.source != "original" else None
+        for evidence in result.evidence:
+            payload = {
+                "source": evidence.source,
+                "status": evidence.status,
+                "score": evidence.score,
+                "explanation": evidence.explanation,
+                "candidate_json": evidence.candidate_json,
+            }
+            log_event(
+                session,
+                request_id=request_id,
+                request_item_id=request_item_id,
+                event_type="resolution_source_evaluated",
+                payload=payload,
+            )
+
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="resolution_selected",
+            payload={
+                "source": result.source,
+                "confidence": result.confidence,
+                "auto_accept": result.confidence >= settings.normalization_auto_accept_threshold,
+                "winner_source": winner_source,
+            },
+        )
+
+
+def _log_zotero_match_event(
+    request_id: str,
+    request_item_id: int,
+    zotero_item_key: str,
+    score: float | None,
+    reason: str | None,
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_existing_item_matched",
+            payload={
+                "zotero_item_key": zotero_item_key,
+                "score": score,
+                "reason": reason,
+            },
+        )
+
+
 def _update_item(item_id: int, **changes) -> None:
     with session_scope() as session:
         item = session.get(RequestItem, item_id)
@@ -688,16 +786,23 @@ def _sync_request_status(session, request: DeliveryRequest) -> None:
 
 def _snapshot_to_bib(snapshot: dict) -> BibliographicData:
     creators = [creator.strip() for creator in snapshot["creators"].split(";") if creator.strip()]
+    editors = [editor.strip() for editor in (snapshot.get("editors") or "").split(";") if editor.strip()]
     return BibliographicData(
         item_type=snapshot["item_type"],
         title=snapshot["title"],
         creators=creators,
+        editors=editors,
         publication_title=snapshot["publication_title"],
         year=snapshot["year"],
         volume=snapshot["volume"],
         issue=snapshot["issue"],
         pages=snapshot["pages"],
         doi=snapshot["doi"],
+        publisher=snapshot.get("publisher"),
+        place=snapshot.get("place"),
+        series=snapshot.get("series"),
+        edition=snapshot.get("edition"),
+        isbn=snapshot.get("isbn"),
         language=snapshot["language"],
         abstract_note=snapshot["abstract_note"],
     )
@@ -705,16 +810,23 @@ def _snapshot_to_bib(snapshot: dict) -> BibliographicData:
 
 def _item_to_bib(item: RequestItem) -> BibliographicData:
     creators = [creator.strip() for creator in item.creators.split(";") if creator.strip()]
+    editors = [editor.strip() for editor in (item.editors or "").split(";") if editor.strip()]
     return BibliographicData(
         item_type=item.item_type,
         title=item.title,
         creators=creators,
+        editors=editors,
         publication_title=item.publication_title,
         year=item.year,
         volume=item.volume,
         issue=item.issue,
         pages=item.pages,
         doi=item.doi,
+        publisher=item.publisher,
+        place=item.place,
+        series=item.series,
+        edition=item.edition,
+        isbn=item.isbn,
         language=item.language,
         abstract_note=item.abstract_note,
     )
@@ -722,16 +834,23 @@ def _item_to_bib(item: RequestItem) -> BibliographicData:
 
 def _item_signature(bib: BibliographicData) -> tuple[str, ...]:
     normalized_creators = ";".join(creator.strip().casefold() for creator in bib.creators if creator.strip())
+    normalized_editors = ";".join(editor.strip().casefold() for editor in bib.editors if editor.strip())
     return (
         (bib.item_type or "").strip().casefold(),
         bib.title.strip().casefold(),
         normalized_creators,
+        normalized_editors,
         bib.publication_title.strip().casefold(),
         (bib.year or "").strip().casefold(),
         (bib.volume or "").strip().casefold(),
         (bib.issue or "").strip().casefold(),
         (bib.pages or "").strip().casefold(),
         (bib.doi or "").strip().casefold(),
+        (bib.publisher or "").strip().casefold(),
+        (bib.place or "").strip().casefold(),
+        (bib.series or "").strip().casefold(),
+        (bib.edition or "").strip().casefold(),
+        (bib.isbn or "").strip().casefold(),
     )
 
 

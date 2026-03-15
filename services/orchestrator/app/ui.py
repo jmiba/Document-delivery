@@ -32,12 +32,18 @@ def _review_seed_from_item(item: dict) -> dict:
         "item_type": item.get("item_type") or "journalArticle",
         "title": item.get("title") or "",
         "creators": item.get("creators") or "",
+        "editors": item.get("editors") or "",
         "publication_title": item.get("publication_title") or "",
         "year": item.get("year") or "",
         "volume": item.get("volume") or "",
         "issue": item.get("issue") or "",
         "pages": item.get("pages") or "",
         "doi": item.get("doi") or "",
+        "publisher": item.get("publisher") or "",
+        "place": item.get("place") or "",
+        "series": item.get("series") or "",
+        "edition": item.get("edition") or "",
+        "isbn": item.get("isbn") or "",
     }
 
 
@@ -46,12 +52,43 @@ def _review_seed_from_bib(payload: dict) -> dict:
         "item_type": payload.get("item_type") or "journalArticle",
         "title": payload.get("title") or "",
         "creators": _creators_to_string(payload.get("creators")),
+        "editors": _creators_to_string(payload.get("editors")),
         "publication_title": payload.get("publication_title") or "",
         "year": payload.get("year") or "",
         "volume": payload.get("volume") or "",
         "issue": payload.get("issue") or "",
         "pages": payload.get("pages") or "",
         "doi": payload.get("doi") or "",
+        "publisher": payload.get("publisher") or "",
+        "place": payload.get("place") or "",
+        "series": payload.get("series") or "",
+        "edition": payload.get("edition") or "",
+        "isbn": payload.get("isbn") or "",
+    }
+
+
+def _approval_payload_from_seed(seed: dict, review_notes: str | None = None) -> dict:
+    creators = [part.strip() for part in (seed.get("creators") or "").split(";") if part.strip()]
+    editors = [part.strip() for part in (seed.get("editors") or "").split(";") if part.strip()]
+    return {
+        "bibliographic_data": {
+            "item_type": seed.get("item_type") or "journalArticle",
+            "title": seed.get("title") or "",
+            "creators": creators,
+            "editors": editors,
+            "publication_title": seed.get("publication_title") or "",
+            "year": seed.get("year") or "",
+            "volume": seed.get("volume") or None,
+            "issue": seed.get("issue") or None,
+            "pages": seed.get("pages") or None,
+            "doi": seed.get("doi") or None,
+            "publisher": seed.get("publisher") or None,
+            "place": seed.get("place") or None,
+            "series": seed.get("series") or None,
+            "edition": seed.get("edition") or None,
+            "isbn": seed.get("isbn") or None,
+        },
+        "review_notes": review_notes or None,
     }
 
 
@@ -190,6 +227,8 @@ if selected_request:
             "item_type": item["item_type"],
             "title": item["title"],
             "creators": item["creators"],
+            "publisher": item["publisher"],
+            "series": item["series"],
             "status": item["status"],
             "metadata_source": item["metadata_source"],
             "confidence": item["normalization_confidence"],
@@ -229,6 +268,7 @@ if selected_request:
             review_presets["Proposed normalization"] = _review_seed_from_bib(normalized_bib)
 
         resolution_json = selected_review.get("resolution_json")
+        quick_actions: list[tuple[str, dict, str]] = []
         if resolution_json:
             st.caption("Source evidence")
             try:
@@ -252,9 +292,50 @@ if selected_request:
                     if candidate_json:
                         candidate_bib = _parse_json_object(candidate_json)
                         if candidate_bib:
-                            review_presets[f"{evidence_item.get('source')} candidate"] = _review_seed_from_bib(candidate_bib)
+                            candidate_seed = _review_seed_from_bib(candidate_bib)
+                            source_name = evidence_item.get("source") or "source"
+                            review_presets[f"{source_name} candidate"] = candidate_seed
+                            quick_actions.append(
+                                (
+                                    f"Accept {source_name}",
+                                    candidate_seed,
+                                    f"Accepted {source_name} candidate directly",
+                                )
+                            )
                         with st.expander(f"{evidence_item.get('source')} candidate"):
                             st.code(candidate_json, language="json")
+
+        if original_bib:
+            quick_actions.insert(
+                0,
+                (
+                    "Accept original submission",
+                    _review_seed_from_bib(original_bib),
+                    "Accepted original submission directly",
+                ),
+            )
+
+        if normalized_bib:
+            quick_actions.append(
+                (
+                    "Accept proposed normalization",
+                    _review_seed_from_bib(normalized_bib),
+                    "Accepted proposed normalization directly",
+                )
+            )
+
+        if quick_actions:
+            st.caption("Quick review actions")
+            action_columns = st.columns(len(quick_actions))
+            for idx, (label, seed, notes) in enumerate(quick_actions):
+                with action_columns[idx]:
+                    if st.button(label, key=f"quick-approve-{selected_review['id']}-{idx}", use_container_width=True):
+                        approve_item(
+                            request["request_id"],
+                            selected_review["id"],
+                            _approval_payload_from_seed(seed, notes),
+                        )
+                        st.rerun()
 
         preset_name = st.selectbox(
             "Load review form from",
@@ -271,32 +352,44 @@ if selected_request:
             )
             title = st.text_input("Title", value=preset["title"])
             creators = st.text_input("Creators (; separated)", value=preset["creators"])
+            editors = st.text_input("Editors (; separated)", value=preset["editors"])
             publication_title = st.text_input("Publication", value=preset["publication_title"])
             year = st.text_input("Year", value=preset["year"])
             volume = st.text_input("Volume", value=preset["volume"])
             issue = st.text_input("Issue", value=preset["issue"])
             pages = st.text_input("Pages", value=preset["pages"])
             doi = st.text_input("DOI", value=preset["doi"])
+            publisher = st.text_input("Publisher", value=preset["publisher"])
+            place = st.text_input("Place", value=preset["place"])
+            series = st.text_input("Series", value=preset["series"])
+            edition = st.text_input("Edition", value=preset["edition"])
+            isbn = st.text_input("ISBN", value=preset["isbn"])
             review_notes = st.text_area("Review notes", value=selected_review.get("review_notes") or "")
             submitted = st.form_submit_button("Approve metadata")
             if submitted:
                 approve_item(
                     request["request_id"],
                     selected_review["id"],
-                    {
-                        "bibliographic_data": {
+                    _approval_payload_from_seed(
+                        {
                             "item_type": item_type,
                             "title": title,
-                            "creators": [part.strip() for part in creators.split(";") if part.strip()],
+                            "creators": creators,
+                            "editors": editors,
                             "publication_title": publication_title,
                             "year": year,
-                            "volume": volume or None,
-                            "issue": issue or None,
-                            "pages": pages or None,
-                            "doi": doi or None,
+                            "volume": volume,
+                            "issue": issue,
+                            "pages": pages,
+                            "doi": doi,
+                            "publisher": publisher,
+                            "place": place,
+                            "series": series,
+                            "edition": edition,
+                            "isbn": isbn,
                         },
-                        "review_notes": review_notes or None,
-                    },
+                        review_notes,
+                    ),
                 )
                 st.rerun()
 

@@ -49,6 +49,12 @@ def _migrate_sqlite() -> None:
             "raw_json": "ALTER TABLE request_items ADD COLUMN raw_json TEXT",
             "review_notes": "ALTER TABLE request_items ADD COLUMN review_notes TEXT",
             "resolution_json": "ALTER TABLE request_items ADD COLUMN resolution_json TEXT",
+            "editors": "ALTER TABLE request_items ADD COLUMN editors TEXT",
+            "publisher": "ALTER TABLE request_items ADD COLUMN publisher TEXT",
+            "place": "ALTER TABLE request_items ADD COLUMN place TEXT",
+            "series": "ALTER TABLE request_items ADD COLUMN series TEXT",
+            "edition": "ALTER TABLE request_items ADD COLUMN edition VARCHAR(64)",
+            "isbn": "ALTER TABLE request_items ADD COLUMN isbn VARCHAR(64)",
         }
     }
 
