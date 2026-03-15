@@ -16,7 +16,7 @@ This repository uses a code-first document delivery stack.
   - metadata resolution
   - Zotero item reuse/creation
   - PDF attachment polling
-  - optional OCR
+  - optional OCR, including native Tesseract text-layer generation
   - Nextcloud upload and share-link generation
   - SMTP delivery notification
 - `Streamlit`
@@ -48,7 +48,7 @@ Lower-confidence cases stay in `NEEDS_REVIEW` until approved in Streamlit.
 4. If required, an operator approves or edits metadata in Streamlit.
 5. The worker reuses or creates the Zotero item.
 6. The worker waits until a PDF attachment exists in Zotero.
-7. The worker optionally runs OCR.
+7. The worker optionally runs OCR, either natively with Tesseract or through a legacy external command.
 8. The worker uploads the PDF to Nextcloud and creates an expiring share link.
 9. When all items in the request are ready, the app sends the delivery email by SMTP.
 10. The email can link back to a FormCycle follow-up form for later conversation with the user.

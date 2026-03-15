@@ -23,7 +23,7 @@ Code-first starter for a university-library document delivery workflow:
 5. Once metadata is approved, the worker checks Zotero for an existing matching item.
 6. If no match exists, the worker creates a new Zotero item tagged `in process`.
 7. The worker polls Zotero until a PDF attachment exists.
-8. The worker optionally runs OCR if `OCR_COMMAND_TEMPLATE` is configured.
+8. The worker optionally runs OCR, either through the native Tesseract overlay pass or a legacy shell command.
 9. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
 10. The worker sends the final requester email directly through SMTP when configured.
 11. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
@@ -63,6 +63,7 @@ The operator workflow is code-first:
             ├── jobs.py
             ├── main.py
             ├── models.py
+            ├── ocr.py
             ├── schemas.py
             ├── ui.py
             └── worker.py
@@ -87,6 +88,13 @@ cp .env.example .env
 ```bash
 docker compose up --build
 ```
+
+The orchestrator image installs the OCR system dependencies itself:
+- `poppler-utils`
+- `tesseract-ocr`
+- Tesseract language packs from `OCR_TESSERACT_LANG_PACKS`
+
+So if you run the app with Docker Compose, you do not need to install Poppler or Tesseract on the host machine.
 
 4. Open the operator UI:
 
@@ -169,6 +177,11 @@ Important item statuses:
 - `SMTP_FROM_EMAIL` is required when SMTP is enabled.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - `FORMCYCLE_FOLLOWUP_URL_TEMPLATE` can embed a personalized FormCycle follow-up link into the delivery mail. Supported placeholders are `{request_id}`, `{formcycle_submission_id}`, `{user_email}`, and URL-encoded variants `{request_id_q}`, `{formcycle_submission_id_q}`, `{user_email_q}`.
-- `OCR_COMMAND_TEMPLATE` is optional. If empty, the worker uploads the original attachment PDF without OCR.
+- `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
+- `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
+- `OCR_LANGUAGE` controls the Tesseract language set, for example `deu+eng+pol`.
+- `OCR_DPI` controls PDF rasterization resolution before OCR.
+- `OCR_POPPLER_PATH` and `OCR_TESSERACT_CMD` are only needed if you run the worker outside Docker and the binaries are not on `PATH`.
+- `OCR_COMMAND_TEMPLATE` remains available only for legacy external OCR commands.
 - `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
 - When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.

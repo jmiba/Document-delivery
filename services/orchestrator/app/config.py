@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     smtp_from_name: str = "Bibliothek"
     smtp_reply_to: str | None = None
 
+    ocr_mode: str = "off"
+    ocr_language: str = "deu+eng+pol"
+    ocr_dpi: int = 300
+    ocr_poppler_path: str | None = None
+    ocr_tesseract_cmd: str | None = None
     ocr_command_template: str | None = None
 
     model_config = SettingsConfigDict(

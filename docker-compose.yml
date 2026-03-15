@@ -2,6 +2,8 @@ services:
   api:
     build:
       context: ./services/orchestrator
+      args:
+        OCR_TESSERACT_LANG_PACKS: ${OCR_TESSERACT_LANG_PACKS:-eng deu pol}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     env_file:
@@ -15,6 +17,8 @@ services:
   worker:
     build:
       context: ./services/orchestrator
+      args:
+        OCR_TESSERACT_LANG_PACKS: ${OCR_TESSERACT_LANG_PACKS:-eng deu pol}
     command: python -m app.worker
     restart: unless-stopped
     env_file:
@@ -26,6 +30,8 @@ services:
   streamlit:
     build:
       context: ./services/orchestrator
+      args:
+        OCR_TESSERACT_LANG_PACKS: ${OCR_TESSERACT_LANG_PACKS:-eng deu pol}
     command: streamlit run app/ui.py --server.address 0.0.0.0 --server.port 8501
     restart: unless-stopped
     env_file:

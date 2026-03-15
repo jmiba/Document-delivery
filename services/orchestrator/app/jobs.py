@@ -13,6 +13,7 @@ from app.clients import NextcloudClient, NotificationClient, ZoteroClient
 from app.config import settings
 from app.db import session_scope
 from app.models import DeliveryRequest, JobEvent, RequestItem
+from app.ocr import create_tesseract_overlay_pdf
 from app.resolution import ResolutionService
 from app.schemas import (
     ApproveMetadataRequest,
@@ -871,8 +872,29 @@ def _next_notification_retry_time() -> datetime:
 
 
 def _maybe_run_ocr(source_pdf: Path) -> Path:
-    if not settings.ocr_command_template:
+    mode = (settings.ocr_mode or "off").strip().lower()
+    if mode in {"", "off", "none", "disabled"}:
+        if settings.ocr_command_template:
+            return _run_legacy_ocr(source_pdf)
         return source_pdf
+    if mode == "command":
+        return _run_legacy_ocr(source_pdf)
+    if mode == "tesseract_overlay":
+        output_pdf = source_pdf.with_name(f"{source_pdf.stem}.ocr.pdf")
+        return create_tesseract_overlay_pdf(
+            source_pdf,
+            output_pdf,
+            language=settings.ocr_language,
+            dpi=settings.ocr_dpi,
+            poppler_path=settings.ocr_poppler_path,
+            tesseract_cmd=settings.ocr_tesseract_cmd,
+        )
+    raise RuntimeError(f"Unsupported OCR mode: {settings.ocr_mode}")
+
+
+def _run_legacy_ocr(source_pdf: Path) -> Path:
+    if not settings.ocr_command_template:
+        raise RuntimeError("OCR mode 'command' requires OCR_COMMAND_TEMPLATE.")
 
     output_pdf = source_pdf.with_name(f"{source_pdf.stem}.ocr.pdf")
     command = settings.ocr_command_template.format(input=source_pdf, output=output_pdf)
