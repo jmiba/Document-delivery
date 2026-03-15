@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import html
+import re
+import smtplib
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 import requests
 
@@ -12,6 +16,26 @@ from app.schemas import BibliographicData, DeliveryNotificationPayload, Normaliz
 
 def _clean(value: str | None) -> str:
     return (value or "").strip()
+
+
+def _normalize_language(value: str | None) -> str:
+    normalized = _clean(value).lower()
+    if normalized.startswith("de"):
+        return "de"
+    if normalized.startswith("pl"):
+        return "pl"
+    if normalized.startswith("en"):
+        return "en"
+    return "de"
+
+
+def _strip_html(value: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    text = re.sub(r"</p\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 class OpenAlexClient:
@@ -239,6 +263,25 @@ class ZoteroClient:
                     handle.write(chunk)
         return destination
 
+    def render_bibliography_item(self, item_key: str, style: str, locale: str) -> tuple[str, str]:
+        response = requests.get(
+            f"{self.base}/items/{item_key}",
+            headers=self._headers(),
+            params={
+                "key": self.api_key,
+                "format": "bib",
+                "style": style,
+                "locale": locale,
+                "linkwrap": 1,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        bibliography_html = response.text.strip()
+        if not bibliography_html:
+            raise RuntimeError(f"Zotero bibliography rendering returned an empty response for item {item_key}.")
+        return bibliography_html, _strip_html(bibliography_html)
+
     def _search_items(self, query: str) -> list[dict]:
         if not query:
             return []
@@ -256,25 +299,59 @@ class ZoteroClient:
         return response.json()
 
     def _item_payload(self, bib: BibliographicData, request_id: str) -> dict:
+        item_type = self._normalize_item_type(bib.item_type)
         creators = [{"creatorType": "author", "name": creator} for creator in bib.creators]
+        extra_lines = [f"Request-ID: {request_id}"]
         item = {
-            "itemType": bib.item_type,
+            "itemType": item_type,
             "title": bib.title,
             "creators": creators,
-            "publicationTitle": bib.publication_title,
             "date": bib.year,
-            "volume": bib.volume or "",
-            "issue": bib.issue or "",
-            "pages": bib.pages or "",
             "DOI": bib.doi or "",
             "language": bib.language or "",
             "abstractNote": bib.abstract_note or "",
             "tags": [{"tag": self.in_process_tag}],
-            "extra": f"Request-ID: {request_id}",
+            "extra": "",
         }
+        if item_type == "journalArticle":
+            item["publicationTitle"] = bib.publication_title
+            item["volume"] = bib.volume or ""
+            item["issue"] = bib.issue or ""
+            item["pages"] = bib.pages or ""
+        elif item_type == "bookSection":
+            item["bookTitle"] = bib.publication_title
+            item["pages"] = bib.pages or ""
+            if bib.volume:
+                extra_lines.append(f"Container-Volume: {bib.volume}")
+        else:
+            item["publicationTitle"] = bib.publication_title
+            item["volume"] = bib.volume or ""
+            item["issue"] = bib.issue or ""
+            item["pages"] = bib.pages or ""
+        item["extra"] = "\n".join(extra_lines)
         if self.collection_key:
             item["collections"] = [self.collection_key]
         return item
+
+    def _normalize_item_type(self, raw: str | None) -> str:
+        value = (raw or "").strip()
+        if not value:
+            return "document"
+        key = value.casefold().replace(" ", "")
+        aliases = {
+            "article": "journalArticle",
+            "journalarticle": "journalArticle",
+            "journal": "journalArticle",
+            "booksection": "bookSection",
+            "bookchapter": "bookSection",
+            "chapter": "bookSection",
+            "incollection": "bookSection",
+            "conferencepaper": "conferencePaper",
+            "inproceedings": "conferencePaper",
+            "conference": "conferencePaper",
+            "proceedings": "conferencePaper",
+        }
+        return aliases.get(key, value)
 
     def _headers(self, content_type: str | None = None) -> dict[str, str]:
         headers = {"Zotero-API-Version": "3"}
@@ -283,89 +360,223 @@ class ZoteroClient:
         return headers
 
 
-class FormCycleClient:
+class NotificationClient:
     def __init__(self) -> None:
-        self.notify_url = settings.formcycle_notify_url
-        self.notify_token = settings.formcycle_notify_token
-
-    def send_delivery(self, payload: DeliveryNotificationPayload) -> None:
-        if not self.notify_url:
-            return
-
-        form_payload = self._build_form_payload(payload)
-        headers = {}
-        if self.notify_token:
-            headers["Authorization"] = f"Bearer {self.notify_token}"
-
-        response = requests.post(
-            self.notify_url,
-            data=form_payload,
-            headers=headers,
-            timeout=30,
-        )
-        response.raise_for_status()
-
-    def _build_form_payload(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
-        return {
-            "token": self.notify_token or "",
-            "request_id": payload.request_id,
-            "formcycle_submission_id": payload.formcycle_submission_id or "",
-            "recipient_email": payload.user_email,
-            "recipient_name": payload.user_name or "",
-            "status": payload.status,
-            "mail_subject": self._mail_subject(payload),
-            "mail_html": self._mail_html(payload),
-            "mail_text": self._mail_text(payload),
+        self.smtp_host = settings.smtp_host
+        self.smtp_port = settings.smtp_port
+        self.smtp_username = settings.smtp_username
+        self.smtp_password = settings.smtp_password
+        self.smtp_use_tls = settings.smtp_use_tls
+        self.smtp_use_ssl = settings.smtp_use_ssl
+        self.smtp_from_email = settings.smtp_from_email
+        self.smtp_from_name = settings.smtp_from_name
+        self.smtp_reply_to = settings.smtp_reply_to
+        self.followup_url_template = settings.formcycle_followup_url_template
+        self.citation_style = settings.citation_style
+        self.citation_locales = {
+            "de": settings.citation_locale_de,
+            "en": settings.citation_locale_en,
+            "pl": settings.citation_locale_pl,
         }
 
+    def send_delivery(self, payload: DeliveryNotificationPayload) -> None:
+        if not self.smtp_host:
+            raise RuntimeError("SMTP_HOST must be configured for delivery notifications.")
+        rendered_payload = self._with_rendered_citations(payload)
+        self._send_email(rendered_payload)
+
+    def _send_email(self, payload: DeliveryNotificationPayload) -> None:
+        if not self.smtp_from_email:
+            raise RuntimeError("SMTP_FROM_EMAIL must be configured when SMTP_HOST is set.")
+
+        message = EmailMessage()
+        message["Subject"] = self._mail_subject(payload)
+        message["From"] = self._format_from_header()
+        message["To"] = payload.user_email
+        if self.smtp_reply_to:
+            message["Reply-To"] = self.smtp_reply_to
+        message.set_content(self._mail_text(payload))
+        message.add_alternative(self._mail_html(payload), subtype="html")
+
+        if self.smtp_use_ssl:
+            smtp = smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, timeout=30)
+        else:
+            smtp = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30)
+
+        with smtp:
+            smtp.ehlo()
+            if self.smtp_use_tls and not self.smtp_use_ssl:
+                smtp.starttls()
+                smtp.ehlo()
+            if self.smtp_username:
+                smtp.login(self.smtp_username, self.smtp_password or "")
+            smtp.send_message(message)
+
+    def _format_from_header(self) -> str:
+        if self.smtp_from_name:
+            return f"{self.smtp_from_name} <{self.smtp_from_email}>"
+        return self.smtp_from_email or ""
+
     def _mail_subject(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
+        if language == "en":
+            return f"Your document delivery is ready ({payload.request_id})"
+        if language == "pl":
+            return f"Twoje zamowione dokumenty sa gotowe ({payload.request_id})"
         return f"Ihre Dokumentlieferung ist bereit ({payload.request_id})"
 
     def _mail_html(self, payload: DeliveryNotificationPayload) -> str:
-        greeting_name = payload.user_name or "Guten Tag"
+        language = _normalize_language(payload.language)
+        greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
         item_blocks = []
         for item in payload.items:
             item_blocks.append(
                 (
-                    "<p>"
-                    f"<strong>Titel {item.item_index + 1}</strong><br>"
-                    f"{self._escape_html(item.citation_text)}<br>"
-                    f'<a href="{self._escape_html(item.download_url)}">PDF herunterladen</a><br>'
-                    f"Link gueltig bis: {self._escape_html(item.expires_on)}"
-                    "</p>"
+                    '<div style="margin: 0 0 1.25rem 0;">'
+                    f"<strong>{self._translation(language, 'item_label')} {item.item_index + 1}</strong><br>"
+                    f'<div style="margin: 0.4rem 0;">{item.citation_text}</div>'
+                    f'<a href="{self._escape_html(item.download_url)}">{self._translation(language, "download_link")}</a><br>'
+                    f"{self._translation(language, 'valid_until')}: {self._escape_html(item.expires_on)}"
+                    "</div>"
                 )
             )
         items_html = "".join(item_blocks)
+        followup_html = self._followup_html(payload)
         return (
-            f"<p>Guten Tag {self._escape_html(greeting_name)},</p>"
-            "<p>die angeforderte Dokumentlieferung ist bereit.</p>"
+            f"<p>{self._translation(language, 'greeting')} {self._escape_html(greeting_name)},</p>"
+            f"<p>{self._translation(language, 'delivery_ready_html')}</p>"
             f"{items_html}"
-            "<p>Mit freundlichen Gruessen<br>Ihre Bibliothek</p>"
+            f"{followup_html}"
+            f"<p>{self._translation(language, 'closing_html')}<br>{self._escape_html(self.smtp_from_name)}</p>"
         )
 
     def _mail_text(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
         greeting_name = payload.user_name or ""
         blocks = []
         for item in payload.items:
             blocks.append(
                 "\n".join(
                     [
-                        f"Titel {item.item_index + 1}",
-                        item.citation_text,
-                        f"Download: {item.download_url}",
-                        f"Link gueltig bis: {item.expires_on}",
+                        f"{self._translation(language, 'item_label')} {item.item_index + 1}",
+                        _strip_html(item.citation_text),
+                        f"{self._translation(language, 'download_label')}: {item.download_url}",
+                        f"{self._translation(language, 'valid_until')}: {item.expires_on}",
                     ]
                 )
             )
         items_text = "\n\n".join(blocks)
-        greeting_line = f"Guten Tag {greeting_name},".strip().rstrip(",") + ","
+        greeting_line = f"{self._translation(language, 'greeting')} {greeting_name},".strip().rstrip(",") + ","
+        followup_text = self._followup_text(payload)
         return (
             f"{greeting_line}\n\n"
-            "die angeforderte Dokumentlieferung ist bereit.\n\n"
+            f"{self._translation(language, 'delivery_ready_text')}\n\n"
             f"{items_text}\n\n"
-            "Mit freundlichen Gruessen\n"
-            "Ihre Bibliothek"
+            f"{followup_text}"
+            f"{self._translation(language, 'closing_text')}\n"
+            f"{self.smtp_from_name}"
         )
+
+    def _followup_url(self, payload: DeliveryNotificationPayload) -> str | None:
+        if not self.followup_url_template:
+            return None
+        values = {
+            "request_id": payload.request_id,
+            "formcycle_submission_id": payload.formcycle_submission_id or "",
+            "user_email": payload.user_email,
+            "request_id_q": quote_plus(payload.request_id),
+            "formcycle_submission_id_q": quote_plus(payload.formcycle_submission_id or ""),
+            "user_email_q": quote_plus(payload.user_email),
+        }
+        return self.followup_url_template.format(**values)
+
+    def _followup_html(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
+        followup_url = self._followup_url(payload)
+        if not followup_url:
+            return ""
+        escaped_url = self._escape_html(followup_url)
+        return (
+            f"<p>{self._translation(language, 'followup_intro_html')}<br>"
+            f'<a href="{escaped_url}">{escaped_url}</a>'
+            "</p>"
+        )
+
+    def _followup_text(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
+        followup_url = self._followup_url(payload)
+        if not followup_url:
+            return ""
+        return (
+            f"{self._translation(language, 'followup_intro_text')}:\n{followup_url}\n\n"
+        )
+
+    def _with_rendered_citations(self, payload: DeliveryNotificationPayload) -> DeliveryNotificationPayload:
+        language = _normalize_language(payload.language)
+        locale = self.citation_locales.get(language, self.citation_locales["de"])
+        zotero = ZoteroClient()
+        rendered_items = []
+        for item in payload.items:
+            bibliography_html, bibliography_text = zotero.render_bibliography_item(
+                item.zotero_item_key,
+                style=self.citation_style,
+                locale=locale,
+            )
+            rendered_items.append(
+                item.model_copy(
+                    update={
+                        "citation_text": bibliography_html if bibliography_html else bibliography_text,
+                    }
+                )
+            )
+        return payload.model_copy(update={"items": rendered_items, "language": language})
+
+    def _translation(self, language: str, key: str) -> str:
+        translations = {
+            "de": {
+                "greeting": "Guten Tag",
+                "greeting_fallback": "Guten Tag",
+                "delivery_ready_html": "die angeforderte Dokumentlieferung ist bereit.",
+                "delivery_ready_text": "die angeforderte Dokumentlieferung ist bereit.",
+                "item_label": "Titel",
+                "download_link": "PDF herunterladen",
+                "download_label": "Download",
+                "valid_until": "Link gueltig bis",
+                "followup_intro_html": "Falls Sie Rueckfragen haben, Metadaten korrigieren moechten oder eine erneute Bereitstellung benoetigen, nutzen Sie bitte dieses Formular",
+                "followup_intro_text": "Falls Sie Rueckfragen haben, Metadaten korrigieren moechten oder eine erneute Bereitstellung benoetigen, nutzen Sie bitte dieses Formular",
+                "closing_html": "Mit freundlichen Gruessen",
+                "closing_text": "Mit freundlichen Gruessen",
+            },
+            "en": {
+                "greeting": "Hello",
+                "greeting_fallback": "there",
+                "delivery_ready_html": "your requested document delivery is ready.",
+                "delivery_ready_text": "your requested document delivery is ready.",
+                "item_label": "Item",
+                "download_link": "Download PDF",
+                "download_label": "Download",
+                "valid_until": "Link valid until",
+                "followup_intro_html": "If you have follow-up questions, need to correct metadata, or need the files to be re-sent, please use this form",
+                "followup_intro_text": "If you have follow-up questions, need to correct metadata, or need the files to be re-sent, please use this form",
+                "closing_html": "Kind regards",
+                "closing_text": "Kind regards",
+            },
+            "pl": {
+                "greeting": "Dzien dobry",
+                "greeting_fallback": "Dzien dobry",
+                "delivery_ready_html": "zamowione materialy sa gotowe do pobrania.",
+                "delivery_ready_text": "zamowione materialy sa gotowe do pobrania.",
+                "item_label": "Pozycja",
+                "download_link": "Pobierz PDF",
+                "download_label": "Pobieranie",
+                "valid_until": "Link wazny do",
+                "followup_intro_html": "Jesli masz pytania, chcesz poprawic metadane lub potrzebujesz ponownego udostepnienia plikow, skorzystaj z tego formularza",
+                "followup_intro_text": "Jesli masz pytania, chcesz poprawic metadane lub potrzebujesz ponownego udostepnienia plikow, skorzystaj z tego formularza",
+                "closing_html": "Z powazaniem",
+                "closing_text": "Z powazaniem",
+            },
+        }
+        return translations.get(language, translations["de"])[key]
 
     def _escape_html(self, value: str) -> str:
         return (

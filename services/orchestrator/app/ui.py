@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import requests
@@ -8,6 +9,50 @@ import streamlit as st
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
+
+
+def _parse_json_object(payload: str | None) -> dict | None:
+    if not payload:
+        return None
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _creators_to_string(value) -> str:
+    if isinstance(value, list):
+        return "; ".join(str(part).strip() for part in value if str(part).strip())
+    return str(value or "").strip()
+
+
+def _review_seed_from_item(item: dict) -> dict:
+    return {
+        "item_type": item.get("item_type") or "journalArticle",
+        "title": item.get("title") or "",
+        "creators": item.get("creators") or "",
+        "publication_title": item.get("publication_title") or "",
+        "year": item.get("year") or "",
+        "volume": item.get("volume") or "",
+        "issue": item.get("issue") or "",
+        "pages": item.get("pages") or "",
+        "doi": item.get("doi") or "",
+    }
+
+
+def _review_seed_from_bib(payload: dict) -> dict:
+    return {
+        "item_type": payload.get("item_type") or "journalArticle",
+        "title": payload.get("title") or "",
+        "creators": _creators_to_string(payload.get("creators")),
+        "publication_title": payload.get("publication_title") or "",
+        "year": payload.get("year") or "",
+        "volume": payload.get("volume") or "",
+        "issue": payload.get("issue") or "",
+        "pages": payload.get("pages") or "",
+        "doi": payload.get("doi") or "",
+    }
 
 
 def _headers() -> dict[str, str]:
@@ -142,6 +187,7 @@ if selected_request:
     item_rows = [
         {
             "item_index": item["item_index"],
+            "item_type": item["item_type"],
             "title": item["title"],
             "creators": item["creators"],
             "status": item["status"],
@@ -174,15 +220,63 @@ if selected_request:
             st.caption("Proposed normalization")
             st.code(normalized_json or "No normalized payload stored", language="json")
 
+        review_presets: dict[str, dict] = {"Current item values": _review_seed_from_item(selected_review)}
+        original_bib = _parse_json_object(raw_json)
+        if original_bib:
+            review_presets["Original submission"] = _review_seed_from_bib(original_bib)
+        normalized_bib = _parse_json_object(normalized_json)
+        if normalized_bib:
+            review_presets["Proposed normalization"] = _review_seed_from_bib(normalized_bib)
+
+        resolution_json = selected_review.get("resolution_json")
+        if resolution_json:
+            st.caption("Source evidence")
+            try:
+                evidence = json.loads(resolution_json)
+            except json.JSONDecodeError:
+                evidence = []
+                st.code(resolution_json, language="json")
+            if evidence:
+                evidence_rows = [
+                    {
+                        "source": item.get("source"),
+                        "status": item.get("status"),
+                        "score": item.get("score"),
+                        "explanation": item.get("explanation"),
+                    }
+                    for item in evidence
+                ]
+                st.dataframe(evidence_rows, use_container_width=True, hide_index=True)
+                for evidence_item in evidence:
+                    candidate_json = evidence_item.get("candidate_json")
+                    if candidate_json:
+                        candidate_bib = _parse_json_object(candidate_json)
+                        if candidate_bib:
+                            review_presets[f"{evidence_item.get('source')} candidate"] = _review_seed_from_bib(candidate_bib)
+                        with st.expander(f"{evidence_item.get('source')} candidate"):
+                            st.code(candidate_json, language="json")
+
+        preset_name = st.selectbox(
+            "Load review form from",
+            options=list(review_presets.keys()),
+            key=f"review-preset-{selected_review['id']}",
+        )
+        preset = review_presets[preset_name]
+
         with st.form(f"approve-item-{selected_review['id']}"):
-            title = st.text_input("Title", value=selected_review["title"])
-            creators = st.text_input("Creators (; separated)", value=selected_review["creators"])
-            publication_title = st.text_input("Publication", value=selected_review["publication_title"])
-            year = st.text_input("Year", value=selected_review["year"])
-            volume = st.text_input("Volume", value=selected_review.get("volume") or "")
-            issue = st.text_input("Issue", value=selected_review.get("issue") or "")
-            pages = st.text_input("Pages", value=selected_review.get("pages") or "")
-            doi = st.text_input("DOI", value=selected_review.get("doi") or "")
+            item_type = st.selectbox(
+                "Item type",
+                options=["journalArticle", "bookSection"],
+                index=0 if preset.get("item_type") != "bookSection" else 1,
+            )
+            title = st.text_input("Title", value=preset["title"])
+            creators = st.text_input("Creators (; separated)", value=preset["creators"])
+            publication_title = st.text_input("Publication", value=preset["publication_title"])
+            year = st.text_input("Year", value=preset["year"])
+            volume = st.text_input("Volume", value=preset["volume"])
+            issue = st.text_input("Issue", value=preset["issue"])
+            pages = st.text_input("Pages", value=preset["pages"])
+            doi = st.text_input("DOI", value=preset["doi"])
             review_notes = st.text_area("Review notes", value=selected_review.get("review_notes") or "")
             submitted = st.form_submit_button("Approve metadata")
             if submitted:
@@ -191,7 +285,7 @@ if selected_request:
                     selected_review["id"],
                     {
                         "bibliographic_data": {
-                            "item_type": "journalArticle",
+                            "item_type": item_type,
                             "title": title,
                             "creators": [part.strip() for part in creators.split(";") if part.strip()],
                             "publication_title": publication_title,

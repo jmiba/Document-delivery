@@ -29,6 +29,7 @@ class FormCycleRequest(BaseModel):
     formcycle_submission_id: str | None = None
     user_email: str
     user_name: str | None = None
+    language: str | None = None
     delivery_days: int | None = None
     items: list[FormCycleRequestItem] = Field(default_factory=list)
     bibliographic_data: BibliographicData | None = None
@@ -58,6 +59,7 @@ class DeliveryNotificationPayload(BaseModel):
     formcycle_submission_id: str | None = None
     user_email: str
     user_name: str | None = None
+    language: str | None = None
     status: str
     items: list[DeliveryItemPayload]
 
@@ -67,16 +69,26 @@ class ApproveMetadataRequest(BaseModel):
     review_notes: str | None = None
 
 
+class ResolutionEvidence(BaseModel):
+    source: str
+    status: str
+    score: float
+    explanation: str
+    candidate_json: str | None = None
+
+
 class NormalizationResult(BaseModel):
     bibliographic_data: BibliographicData
     source: str
     confidence: float
     notes: str | None = None
+    evidence: list[ResolutionEvidence] = Field(default_factory=list)
 
 
 class RequestItemSummary(BaseModel):
     id: int
     item_index: int
+    item_type: str
     title: str
     creators: str
     publication_title: str
@@ -96,6 +108,7 @@ class RequestItemSummary(BaseModel):
     review_notes: str | None
     raw_json: str | None
     normalized_json: str | None
+    resolution_json: str | None
     updated_at: datetime
 
 
@@ -104,6 +117,7 @@ class RequestSummary(BaseModel):
     formcycle_submission_id: str | None
     user_email: str
     user_name: str | None
+    language: str | None
     status: str
     delivery_days: int
     last_error: str | None

@@ -6,13 +6,14 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.clients import FormCycleClient, NextcloudClient, OpenAlexClient, ZoteroClient
+from app.clients import NextcloudClient, NotificationClient, ZoteroClient
 from app.config import settings
 from app.db import session_scope
 from app.models import DeliveryRequest, JobEvent, RequestItem
+from app.resolution import ResolutionService
 from app.schemas import (
     ApproveMetadataRequest,
     BibliographicData,
@@ -33,13 +34,20 @@ def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
             .options(selectinload(DeliveryRequest.items))
         )
         if existing:
+            added_items = _append_request_items(existing, payload.items)
+            if payload.language and not existing.form_language:
+                existing.form_language = payload.language
+            event_type = "request_items_appended" if added_items else "duplicate_request_ignored"
             log_event(
                 session,
                 request_id=existing.request_id,
                 request_item_id=None,
-                event_type="duplicate_request_ignored",
-                payload={"request_id": payload.request_id},
+                event_type=event_type,
+                payload={"request_id": payload.request_id, "added_item_count": added_items},
             )
+            if added_items:
+                existing.last_error = None
+                _sync_request_status(session, existing)
             return existing.request_id, False
 
         request = DeliveryRequest(
@@ -47,32 +55,14 @@ def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
             formcycle_submission_id=payload.formcycle_submission_id,
             user_email=payload.user_email,
             user_name=payload.user_name,
+            form_language=payload.language,
             status="RECEIVED",
             delivery_days=payload.delivery_days or settings.default_link_expiry_days,
         )
         session.add(request)
         session.flush()
 
-        for item_payload in payload.items:
-            bib = item_payload.bibliographic_data
-            request.items.append(
-                RequestItem(
-                    item_index=item_payload.item_index or 0,
-                    title=bib.title,
-                    creators="; ".join(bib.creators),
-                    publication_title=bib.publication_title,
-                    year=bib.year,
-                    volume=bib.volume,
-                    issue=bib.issue,
-                    pages=bib.pages,
-                    doi=bib.doi,
-                    language=bib.language,
-                    abstract_note=bib.abstract_note,
-                    item_type=bib.item_type,
-                    raw_json=bib.model_dump_json(),
-                    status="PENDING_METADATA",
-                )
-            )
+        _append_request_items(request, payload.items)
 
         log_event(
             session,
@@ -83,6 +73,42 @@ def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
         )
         _sync_request_status(session, request)
         return request.request_id, True
+
+
+def _append_request_items(request: DeliveryRequest, item_payloads: list) -> int:
+    next_index = max((item.item_index for item in request.items), default=-1) + 1
+    existing_signatures = {_item_signature(_item_to_bib(item)) for item in request.items}
+    added = 0
+
+    for item_payload in item_payloads:
+        bib = item_payload.bibliographic_data
+        signature = _item_signature(bib)
+        if signature in existing_signatures:
+            continue
+
+        request.items.append(
+            RequestItem(
+                item_index=next_index,
+                title=bib.title,
+                creators="; ".join(bib.creators),
+                publication_title=bib.publication_title,
+                year=bib.year,
+                volume=bib.volume,
+                issue=bib.issue,
+                pages=bib.pages,
+                doi=bib.doi,
+                language=bib.language,
+                abstract_note=bib.abstract_note,
+                item_type=bib.item_type,
+                raw_json=bib.model_dump_json(),
+                status="PENDING_METADATA",
+            )
+        )
+        existing_signatures.add(signature)
+        next_index += 1
+        added += 1
+
+    return added
 
 
 def list_requests() -> list[RequestSummary]:
@@ -229,6 +255,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
         RequestItemSummary(
             id=item.id,
             item_index=item.item_index,
+            item_type=item.item_type,
             title=item.title,
             creators=item.creators,
             publication_title=item.publication_title,
@@ -248,6 +275,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             review_notes=item.review_notes,
             raw_json=item.raw_json,
             normalized_json=item.normalized_json,
+            resolution_json=item.resolution_json,
             updated_at=item.updated_at,
         )
         for item in request.items
@@ -257,6 +285,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
         formcycle_submission_id=request.formcycle_submission_id,
         user_email=request.user_email,
         user_name=request.user_name,
+        language=request.form_language,
         status=request.status,
         delivery_days=request.delivery_days,
         last_error=request.last_error,
@@ -288,6 +317,14 @@ def log_event(
 
 def _claim_next_item_snapshot() -> dict | None:
     now = datetime.now(timezone.utc)
+    status_priority = case(
+        (RequestItem.status == "PENDING_METADATA", 1),
+        (RequestItem.status == "PENDING_ZOTERO", 2),
+        (RequestItem.status == "WAITING_FOR_ATTACHMENT", 3),
+        (RequestItem.status == "PROCESSING_PDF", 4),
+        (RequestItem.status == "READY_TO_NOTIFY", 5),
+        else_=99,
+    )
     with session_scope() as session:
         item = session.scalar(
             select(RequestItem)
@@ -306,7 +343,7 @@ def _claim_next_item_snapshot() -> dict | None:
                     & ((RequestItem.next_poll_at.is_(None)) | (RequestItem.next_poll_at <= now))
                 )
             )
-            .order_by(RequestItem.updated_at.asc())
+            .order_by(status_priority.asc(), RequestItem.updated_at.asc())
         )
         if not item:
             return None
@@ -340,7 +377,7 @@ def _claim_next_item_snapshot() -> dict | None:
 
 def _process_metadata_stage(snapshot: dict) -> None:
     source_bib = _snapshot_to_bib(snapshot)
-    result = OpenAlexClient().normalize(source_bib)
+    result = ResolutionService().normalize(source_bib)
     normalized_bib = result.bibliographic_data
     citation_text = _format_citation(normalized_bib)
     confidence = f"{result.confidence:.2f}"
@@ -361,6 +398,10 @@ def _process_metadata_stage(snapshot: dict) -> None:
             metadata_source=result.source,
             normalization_confidence=confidence,
             normalized_json=normalized_bib.model_dump_json(),
+            resolution_json=json.dumps(
+                [evidence.model_dump(mode="json") for evidence in result.evidence],
+                ensure_ascii=True,
+            ),
             citation_text=citation_text,
             review_notes=result.notes,
             status="NEEDS_REVIEW",
@@ -383,6 +424,10 @@ def _process_metadata_stage(snapshot: dict) -> None:
         metadata_source=result.source,
         normalization_confidence=confidence,
         normalized_json=normalized_bib.model_dump_json(),
+        resolution_json=json.dumps(
+            [evidence.model_dump(mode="json") for evidence in result.evidence],
+            ensure_ascii=True,
+        ),
         citation_text=citation_text,
         review_notes=result.notes,
         status="PENDING_ZOTERO",
@@ -393,6 +438,19 @@ def _process_metadata_stage(snapshot: dict) -> None:
 def _process_zotero_stage(snapshot: dict) -> None:
     bib = _snapshot_to_bib(snapshot)
     zotero = ZoteroClient()
+
+    if snapshot["zotero_item_key"]:
+        attachment_key = zotero.find_pdf_attachment(snapshot["zotero_item_key"])
+        _update_item(
+            snapshot["item_id"],
+            citation_text=_format_citation(bib),
+            zotero_item_key=snapshot["zotero_item_key"],
+            zotero_attachment_key=attachment_key,
+            status="PROCESSING_PDF" if attachment_key else "WAITING_FOR_ATTACHMENT",
+            next_poll_at=None if attachment_key else _next_poll_time(),
+        )
+        return
+
     existing_item = zotero.find_existing_item(bib)
 
     if existing_item:
@@ -530,6 +588,7 @@ def _maybe_finalize_request(request_id: str) -> None:
             formcycle_submission_id=request.formcycle_submission_id,
             user_email=request.user_email,
             user_name=request.user_name,
+            language=request.form_language,
             status="DELIVERED",
             items=[
                 DeliveryItemPayload(
@@ -543,7 +602,7 @@ def _maybe_finalize_request(request_id: str) -> None:
             ],
         )
 
-    FormCycleClient().send_delivery(payload)
+    NotificationClient().send_delivery(payload)
 
     with session_scope() as session:
         request = session.scalar(
@@ -658,6 +717,21 @@ def _item_to_bib(item: RequestItem) -> BibliographicData:
         doi=item.doi,
         language=item.language,
         abstract_note=item.abstract_note,
+    )
+
+
+def _item_signature(bib: BibliographicData) -> tuple[str, ...]:
+    normalized_creators = ";".join(creator.strip().casefold() for creator in bib.creators if creator.strip())
+    return (
+        (bib.item_type or "").strip().casefold(),
+        bib.title.strip().casefold(),
+        normalized_creators,
+        bib.publication_title.strip().casefold(),
+        (bib.year or "").strip().casefold(),
+        (bib.volume or "").strip().casefold(),
+        (bib.issue or "").strip().casefold(),
+        (bib.pages or "").strip().casefold(),
+        (bib.doi or "").strip().casefold(),
     )
 
 

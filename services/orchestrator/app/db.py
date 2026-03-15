@@ -41,10 +41,14 @@ def _migrate_sqlite() -> None:
         return
 
     migrations = {
+        "delivery_requests": {
+            "form_language": "ALTER TABLE delivery_requests ADD COLUMN form_language VARCHAR(16)",
+        },
         "request_items": {
             "normalization_confidence": "ALTER TABLE request_items ADD COLUMN normalization_confidence VARCHAR(32)",
             "raw_json": "ALTER TABLE request_items ADD COLUMN raw_json TEXT",
             "review_notes": "ALTER TABLE request_items ADD COLUMN review_notes TEXT",
+            "resolution_json": "ALTER TABLE request_items ADD COLUMN resolution_json TEXT",
         }
     }
 

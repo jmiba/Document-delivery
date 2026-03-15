@@ -1,4 +1,4 @@
-# FormCycle form sketch for SQLite + Streamlit delivery workflow
+# FormCycle form sketch for SMTP delivery + FormCycle follow-up workflow
 
 ## Form 1: Public request intake (`digitization_request`)
 
@@ -36,6 +36,7 @@ Target JSON shape:
   "formcycle_submission_id": "[%req_submission_id%]",
   "user_email": "[%req_email%]",
   "user_name": "[%req_name%]",
+  "language": "[%lang%]",
   "delivery_days": "[%req_delivery_days%]",
   "items": [
     {
@@ -56,36 +57,81 @@ Target JSON shape:
 }
 ```
 
-## Form 2: Delivery callback (`digitization_delivery_callback`)
+## Form 2: Follow-up interaction (`digitization_followup`)
 
-Purpose: receive delivery results after all items in a request are ready.
+Purpose: handle user conversation after the app has already sent the delivery email.
 
-Expected callback fields:
-- `token`
+Recommended hidden or prefilled fields:
 - `request_id`
 - `formcycle_submission_id`
-- `recipient_email`
-- `recipient_name`
-- `status`
-- `mail_subject`
-- `mail_html`
-- `mail_text`
+- `user_email`
 
-Workflow on callback:
-1. Validate `[%token%]` against the shared secret in a workflow condition.
-2. Update FormCycle process status to `DELIVERED`.
-3. Send requester email with:
-- recipient: `[%recipient_email%]`
-- subject: `[%mail_subject%]`
-- HTML body: `[%mail_html%]`
-- text body: `[%mail_text%]`
+Visible user fields:
+- `interaction_type` (selection)
+  - `clarification`
+  - `confirmation`
+  - `redelivery`
+- `message` (textarea)
+- `corrected_citation` (textarea, optional)
+- `preferred_email` (email, optional)
 
-The app posts callback data as a standard form submission, not nested JSON.
+Recommended prefill via URL parameters:
+- `request_id`
+- `formcycle_submission_id`
+- `user_email`
 
-## Suggested FormCycle statuses
+Example link template for the app:
 
+```text
+https://forms.europa-uni.de/form/provide/<followup-form-id>/?request_id={request_id_q}&formcycle_submission_id={formcycle_submission_id_q}&user_email={user_email_q}
+```
+
+Set this in `.env` as:
+
+```env
+FORMCYCLE_FOLLOWUP_URL_TEMPLATE=https://forms.europa-uni.de/form/provide/<followup-form-id>/?request_id={request_id_q}&formcycle_submission_id={formcycle_submission_id_q}&user_email={user_email_q}
+```
+
+The app will insert this personalized link into the delivery email.
+
+The public intake form should pass the active FormCycle language through `[%lang%]` so:
+- the delivery email is sent in the same language as the form
+- Zotero renders bibliography entries with the matching citation locale
+
+## Recommended FormCycle states
+
+For the intake form:
 - `REQUESTED`
 - `IN_PROGRESS`
 - `WAITING_FOR_ATTACHMENT`
 - `DELIVERED`
 - `ERROR`
+
+For the follow-up form:
+- `OPEN`
+- `CLARIFICATION_REQUESTED`
+- `USER_CONFIRMED`
+- `REDELIVERY_REQUESTED`
+- `CLOSED`
+
+## Recommended follow-up workflow
+
+1. User receives delivery email from the app.
+2. Email contains personalized FormCycle follow-up link.
+3. User opens follow-up form.
+4. FormCycle workflow routes by `interaction_type`.
+
+Suggested routing:
+- `clarification`
+  - state: `CLARIFICATION_REQUESTED`
+  - notify staff mailbox
+- `confirmation`
+  - state: `USER_CONFIRMED`
+  - optional thank-you message
+- `redelivery`
+  - state: `REDELIVERY_REQUESTED`
+  - notify staff mailbox and optionally ask for reason
+
+The preferred architecture is:
+- app sends delivery email
+- FormCycle handles user follow-up interaction

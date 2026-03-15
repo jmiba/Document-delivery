@@ -5,6 +5,7 @@ Code-first starter for a university-library document delivery workflow:
 - FastAPI stores requests and requested items in SQLite.
 - A polling worker normalizes metadata, checks Zotero, waits for PDF attachments, and delivers finished PDFs through Nextcloud.
 - Streamlit provides the operator view for queue status, failures, and retries.
+- Delivery notifications are sent directly by SMTP from the app, with an optional personalized FormCycle follow-up link for later conversation steps.
 
 ## Stack
 
@@ -17,14 +18,15 @@ Code-first starter for a university-library document delivery workflow:
 
 1. FormCycle posts a request with one or more bibliographic items.
 2. FastAPI persists the request in SQLite.
-3. The worker normalizes metadata through OpenAlex when configured.
+3. The worker normalizes metadata through a multi-source resolver using Crossref and OpenAlex.
 4. Low-confidence normalization results are held in `NEEDS_REVIEW` until an operator approves or edits them in Streamlit.
 5. Once metadata is approved, the worker checks Zotero for an existing matching item.
 6. If no match exists, the worker creates a new Zotero item tagged `in process`.
 7. The worker polls Zotero until a PDF attachment exists.
 8. The worker optionally runs OCR if `OCR_COMMAND_TEMPLATE` is configured.
 9. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
-10. The worker posts a flat callback payload to a hidden FormCycle mail form, which sends the final requester email.
+10. The worker sends the final requester email directly through SMTP when configured.
+11. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
 
 ## Project layout
 
@@ -96,6 +98,7 @@ curl -X POST http://localhost:8000/webhooks/formcycle/requests \
     "formcycle_submission_id": "12345",
     "user_email": "user@example.edu",
     "user_name": "Jane User",
+    "language": "de",
     "delivery_days": 14,
     "items": [
       {
@@ -117,6 +120,7 @@ curl -X POST http://localhost:8000/webhooks/formcycle/requests \
 ```
 
 The API also accepts the older single-item shape with top-level `bibliographic_data`.
+If FormCycle posts repeated items one by one with the same `request_id`, the app appends those items to the existing request instead of discarding them.
 
 ## SQLite state model
 
@@ -138,10 +142,17 @@ Important item statuses:
 ## Configuration notes
 
 - `DATABASE_URL` defaults to `sqlite:////app/data/delivery.sqlite3`.
-- `OPENALEX_EMAIL` enables metadata normalization against OpenAlex. Leave it empty to skip enrichment.
+- `OPENALEX_EMAIL` enables OpenAlex as a normalization source.
+- `CROSSREF_MAILTO` is optional but recommended for polite Crossref API usage.
+- `RESOLUTION_PRIORITY_CROSSREF` and `RESOLUTION_PRIORITY_OPENALEX` control which validated source wins when both match.
 - `NORMALIZATION_AUTO_ACCEPT_THRESHOLD` controls when a metadata match can bypass human review.
 - `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
-- `FORMCYCLE_NOTIFY_URL` should point to the submit/process URL of a hidden FormCycle callback form.
-- `FORMCYCLE_NOTIFY_TOKEN` is posted as the `token` form field to that callback form and can also be reused as an HTTP bearer token if needed.
+- `CITATION_STYLE` controls the CSL style Zotero uses when the app renders bibliography entries for the delivery mail.
+- `CITATION_LOCALE_DE`, `CITATION_LOCALE_EN`, and `CITATION_LOCALE_PL` map the FormCycle form language to the Zotero citation locale.
+- `SMTP_HOST` enables direct email delivery from the app.
+- `SMTP_FROM_EMAIL` is required when SMTP is enabled.
+- `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
+- `FORMCYCLE_FOLLOWUP_URL_TEMPLATE` can embed a personalized FormCycle follow-up link into the delivery mail. Supported placeholders are `{request_id}`, `{formcycle_submission_id}`, `{user_email}`, and URL-encoded variants `{request_id_q}`, `{formcycle_submission_id_q}`, `{user_email_q}`.
 - `OCR_COMMAND_TEMPLATE` is optional. If empty, the worker uploads the original attachment PDF without OCR.
 - `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
+- When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.
