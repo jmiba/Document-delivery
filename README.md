@@ -23,7 +23,7 @@ Code-first starter for a university-library document delivery workflow:
 5. Once metadata is approved, the worker checks Zotero for an existing matching item.
 6. If no match exists, the worker creates a new Zotero item tagged `in process`.
 7. The worker polls Zotero until a PDF attachment exists.
-8. The worker optionally runs OCR, either through the native Tesseract overlay pass or a legacy shell command.
+8. The worker optionally runs OCR through the native Tesseract overlay pass.
 9. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
 10. The worker sends the final requester email directly through SMTP when configured.
 11. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
@@ -179,9 +179,11 @@ Important item statuses:
 - `FORMCYCLE_FOLLOWUP_URL_TEMPLATE` can embed a personalized FormCycle follow-up link into the delivery mail. Supported placeholders are `{request_id}`, `{formcycle_submission_id}`, `{user_email}`, and URL-encoded variants `{request_id_q}`, `{formcycle_submission_id_q}`, `{user_email_q}`.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
 - `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
-- `OCR_LANGUAGE` controls the Tesseract language set, for example `deu+eng+pol`.
+- `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.
+- `OCR_LANGUAGE` controls the runtime fallback OCR language set, for example `deu+eng+pol`.
+- `OCR_LANGUAGE_DETECT_SEED` controls the broader seed bundle used for the detection pass.
+- `OCR_LANGUAGE_DETECT_PAGES` controls how many leading pages are sampled for language detection.
 - `OCR_DPI` controls PDF rasterization resolution before OCR.
 - `OCR_POPPLER_PATH` and `OCR_TESSERACT_CMD` are only needed if you run the worker outside Docker and the binaries are not on `PATH`.
-- `OCR_COMMAND_TEMPLATE` remains available only for legacy external OCR commands.
 - `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
 - When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.

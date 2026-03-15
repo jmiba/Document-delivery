@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,7 +11,7 @@ from app.clients import NextcloudClient, NotificationClient, ZoteroClient
 from app.config import settings
 from app.db import session_scope
 from app.models import DeliveryRequest, JobEvent, RequestItem
-from app.ocr import create_tesseract_overlay_pdf
+from app.ocr import OcrOverlayResult, create_tesseract_overlay_pdf
 from app.resolution import ResolutionService
 from app.schemas import (
     ApproveMetadataRequest,
@@ -557,7 +555,9 @@ def _process_delivery_stage(snapshot: dict) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     source_pdf = work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.source.pdf"
     ZoteroClient().download_attachment(attachment_key, source_pdf)
-    processed_pdf = _maybe_run_ocr(source_pdf)
+    processed_pdf, ocr_result = _maybe_run_ocr(source_pdf)
+    if ocr_result is not None:
+        _log_ocr_event(snapshot["request_id"], snapshot["item_id"], ocr_result)
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=snapshot["delivery_days"])
     remote_filename = f"{snapshot['request_id']}-{snapshot['item_index']}.pdf"
@@ -871,37 +871,39 @@ def _next_notification_retry_time() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=settings.notification_retry_interval_seconds)
 
 
-def _maybe_run_ocr(source_pdf: Path) -> Path:
+def _maybe_run_ocr(source_pdf: Path) -> tuple[Path, OcrOverlayResult | None]:
     mode = (settings.ocr_mode or "off").strip().lower()
     if mode in {"", "off", "none", "disabled"}:
-        if settings.ocr_command_template:
-            return _run_legacy_ocr(source_pdf)
-        return source_pdf
-    if mode == "command":
-        return _run_legacy_ocr(source_pdf)
+        return source_pdf, None
     if mode == "tesseract_overlay":
-        output_pdf = source_pdf.with_name(f"{source_pdf.stem}.ocr.pdf")
-        return create_tesseract_overlay_pdf(
+        result = create_tesseract_overlay_pdf(
             source_pdf,
-            output_pdf,
+            source_pdf.with_name(f"{source_pdf.stem}.ocr.pdf"),
             language=settings.ocr_language,
             dpi=settings.ocr_dpi,
+            language_mode=settings.ocr_language_mode,
+            detect_seed_language=settings.ocr_language_detect_seed,
+            detect_sample_pages=settings.ocr_language_detect_pages,
             poppler_path=settings.ocr_poppler_path,
             tesseract_cmd=settings.ocr_tesseract_cmd,
         )
+        return result.output_pdf, result
     raise RuntimeError(f"Unsupported OCR mode: {settings.ocr_mode}")
 
 
-def _run_legacy_ocr(source_pdf: Path) -> Path:
-    if not settings.ocr_command_template:
-        raise RuntimeError("OCR mode 'command' requires OCR_COMMAND_TEMPLATE.")
-
-    output_pdf = source_pdf.with_name(f"{source_pdf.stem}.ocr.pdf")
-    command = settings.ocr_command_template.format(input=source_pdf, output=output_pdf)
-    subprocess.run(shlex.split(command), check=True)
-    if output_pdf.exists():
-        return output_pdf
-    return source_pdf
+def _log_ocr_event(request_id: str, request_item_id: int, result: OcrOverlayResult) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="ocr_applied",
+            payload={
+                "language_bundle": result.language_bundle,
+                "detected_language": result.detected_language,
+                "output_pdf": str(result.output_pdf),
+            },
+        )
 
 
 def _serialize_value(value) -> str | None:

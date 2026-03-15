@@ -7,3 +7,4 @@ streamlit==1.44.0
 pdf2image==1.17.0
 pypdf==5.3.1
 pytesseract==0.3.13
+langdetect==1.0.9

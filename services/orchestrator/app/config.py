@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -51,12 +52,14 @@ class Settings(BaseSettings):
     smtp_from_name: str = "Bibliothek"
     smtp_reply_to: str | None = None
 
-    ocr_mode: str = "off"
+    ocr_mode: Literal["off", "tesseract_overlay"] = "off"
+    ocr_language_mode: str = "manual"
     ocr_language: str = "deu+eng+pol"
+    ocr_language_detect_seed: str = "eng+deu+pol+fra"
+    ocr_language_detect_pages: int = 2
     ocr_dpi: int = 300
     ocr_poppler_path: str | None = None
     ocr_tesseract_cmd: str | None = None
-    ocr_command_template: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
