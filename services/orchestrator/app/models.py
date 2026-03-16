@@ -90,3 +90,15 @@ class JobEvent(Base):
     event_type: Mapped[str] = mapped_column(String(128))
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EmailTemplate(Base):
+    __tablename__ = "email_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    language: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    subject_template: Mapped[str] = mapped_column(Text)
+    body_text_template: Mapped[str] = mapped_column(Text)
+    body_html_template: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

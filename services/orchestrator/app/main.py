@@ -10,11 +10,13 @@ from app.jobs import (
     approve_metadata_item,
     create_request,
     get_request_summary,
+    list_email_templates,
     list_job_events,
     list_requests,
     retry_request,
+    update_email_template,
 )
-from app.schemas import ApproveMetadataRequest, FormCycleRequest
+from app.schemas import ApproveMetadataRequest, FormCycleRequest, UpdateEmailTemplateRequest
 
 
 @asynccontextmanager
@@ -86,3 +88,23 @@ def approve_request_item(
     if not approve_metadata_item(request_id, item_id, approval):
         raise HTTPException(status_code=404, detail="Request item not found")
     return {"request_id": request_id, "item_id": item_id, "approved": True}
+
+
+@app.get("/email-templates")
+def get_email_templates(x_internal_token: str | None = Header(default=None)) -> list[dict]:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    return [template.model_dump(mode="json") for template in list_email_templates()]
+
+
+@app.put("/email-templates/{language}")
+def put_email_template(
+    language: str,
+    payload: UpdateEmailTemplateRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        template = update_email_template(language, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return template.model_dump(mode="json")

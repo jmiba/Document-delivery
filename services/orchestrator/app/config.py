@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     ocr_dpi: int = 300
     ocr_poppler_path: str | None = None
     ocr_tesseract_cmd: str | None = None
+    ocr_skip_if_text_layer: bool = True
+    ocr_text_layer_min_chars_per_page: int = 80
+    ocr_text_layer_min_page_ratio: float = 0.5
+    ocr_text_layer_min_alpha_ratio: float = 0.6
 
     model_config = SettingsConfigDict(
         env_file=".env",

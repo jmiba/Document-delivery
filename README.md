@@ -83,7 +83,16 @@ mkdir -p data/scans data/app
 cp .env.example .env
 ```
 
-3. Start services:
+3. If you want Streamlit authentication, create a secrets file:
+
+```bash
+mkdir -p .streamlit
+cp .streamlit/secrets.example.toml .streamlit/secrets.toml
+```
+
+The Streamlit auth model used here follows `/Users/jmittelbach/Gitlab/ai-service-chatbot`: it is Streamlit's built-in OIDC login flow, not direct SAML. If your institution exposes only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it.
+
+4. Start services:
 
 ```bash
 docker compose up --build
@@ -96,16 +105,16 @@ The orchestrator image installs the OCR system dependencies itself:
 
 So if you run the app with Docker Compose, you do not need to install Poppler or Tesseract on the host machine.
 
-4. Open the operator UI:
+5. Open the operator UI:
 
 ```text
-http://localhost:8501
+http://localhost:18501
 ```
 
-5. Health check:
+6. Health check:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:18000/health
 ```
 
 ## FormCycle webhook payload example
@@ -113,7 +122,7 @@ curl http://localhost:8000/health
 This is the preferred shape for new FormCycle requests:
 
 ```bash
-curl -X POST http://localhost:8000/webhooks/formcycle/requests \
+curl -X POST http://localhost:18000/webhooks/formcycle/requests \
   -H "Content-Type: application/json" \
   -H "X-Formcycle-Secret: change-me" \
   -d '{
@@ -176,7 +185,9 @@ Important item statuses:
 - `SMTP_HOST` enables direct email delivery from the app.
 - `SMTP_FROM_EMAIL` is required when SMTP is enabled.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
+- Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
 - `FORMCYCLE_FOLLOWUP_URL_TEMPLATE` can embed a personalized FormCycle follow-up link into the delivery mail. Supported placeholders are `{request_id}`, `{formcycle_submission_id}`, `{user_email}`, and URL-encoded variants `{request_id_q}`, `{formcycle_submission_id_q}`, `{user_email_q}`.
+- Email templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page. Available placeholders are `{request_id}`, `{submission_id}`, `{user_email}`, `{user_name}`, `{greeting_name}`, `{item_count}`, `{items_text}`, `{items_html}`, `{followup_text}`, `{followup_html}`, and `{sender_name}`.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
 - `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
 - `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.
@@ -185,5 +196,7 @@ Important item statuses:
 - `OCR_LANGUAGE_DETECT_PAGES` controls how many leading pages are sampled for language detection.
 - `OCR_DPI` controls PDF rasterization resolution before OCR.
 - `OCR_POPPLER_PATH` and `OCR_TESSERACT_CMD` are only needed if you run the worker outside Docker and the binaries are not on `PATH`.
+- `OCR_SKIP_IF_TEXT_LAYER=true` skips OCR when the existing PDF text layer looks usable by heuristic checks.
+- `OCR_TEXT_LAYER_MIN_CHARS_PER_PAGE`, `OCR_TEXT_LAYER_MIN_PAGE_RATIO`, and `OCR_TEXT_LAYER_MIN_ALPHA_RATIO` tune that heuristic.
 - `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
 - When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.

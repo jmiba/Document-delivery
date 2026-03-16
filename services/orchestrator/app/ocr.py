@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,11 @@ class OcrOverlayResult:
     output_pdf: Path
     language_bundle: str
     detected_language: str | None
+    skipped: bool = False
+    skip_reason: str | None = None
+    text_layer_avg_chars_per_page: float | None = None
+    text_layer_page_ratio: float | None = None
+    text_layer_alpha_ratio: float | None = None
 
 LANGUAGE_BUNDLES: dict[str, str] = {
     "de": "deu+eng+fra+nld",
@@ -51,6 +57,67 @@ LANGUAGE_BUNDLES: dict[str, str] = {
     "no": "nor+swe+dan+eng+deu",
     "el": "ell+eng+deu+fra",
 }
+
+
+def assess_pdf_text_layer(
+    source_pdf: Path,
+    *,
+    min_chars_per_page: int,
+    min_page_ratio: float,
+    min_alpha_ratio: float,
+) -> tuple[bool, dict[str, float | str]]:
+    try:
+        reader = PdfReader(str(source_pdf))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to inspect PDF text layer: {exc}") from exc
+
+    page_count = len(reader.pages)
+    if page_count <= 0:
+        return False, {
+            "reason": "pdf has no pages",
+            "avg_chars_per_page": 0.0,
+            "page_ratio": 0.0,
+            "alpha_ratio": 0.0,
+        }
+
+    total_chars = 0
+    pages_with_meaningful_text = 0
+    alpha_chars = 0
+    non_space_chars = 0
+
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        normalized = re.sub(r"\s+", " ", text).strip()
+        char_count = len(normalized)
+        total_chars += char_count
+        if char_count >= max(20, min_chars_per_page // 2):
+            pages_with_meaningful_text += 1
+        alpha_chars += sum(1 for char in normalized if char.isalpha())
+        non_space_chars += sum(1 for char in normalized if not char.isspace())
+
+    avg_chars_per_page = total_chars / page_count
+    page_ratio = pages_with_meaningful_text / page_count
+    alpha_ratio = alpha_chars / non_space_chars if non_space_chars else 0.0
+
+    should_skip = (
+        avg_chars_per_page >= min_chars_per_page
+        and page_ratio >= min_page_ratio
+        and alpha_ratio >= min_alpha_ratio
+    )
+    reason = (
+        "existing text layer looks usable"
+        if should_skip
+        else "existing text layer missing or low quality"
+    )
+    return should_skip, {
+        "reason": reason,
+        "avg_chars_per_page": round(avg_chars_per_page, 2),
+        "page_ratio": round(page_ratio, 4),
+        "alpha_ratio": round(alpha_ratio, 4),
+    }
 
 
 def resolve_poppler_path(explicit: str | None = None) -> str | None:
@@ -164,6 +231,10 @@ def create_tesseract_overlay_pdf(
     detect_sample_pages: int = 2,
     poppler_path: str | None = None,
     tesseract_cmd: str | None = None,
+    skip_if_text_layer: bool = True,
+    text_layer_min_chars_per_page: int = 80,
+    text_layer_min_page_ratio: float = 0.5,
+    text_layer_min_alpha_ratio: float = 0.6,
 ) -> OcrOverlayResult:
     if not source_pdf.is_file():
         raise RuntimeError(f"Source PDF not found: {source_pdf}")
@@ -181,6 +252,31 @@ def create_tesseract_overlay_pdf(
         raise RuntimeError(f"Failed to inspect PDF page count: {exc}") from exc
     if page_count <= 0:
         raise RuntimeError("Input PDF has no pages.")
+
+    if skip_if_text_layer:
+        should_skip, text_layer_stats = assess_pdf_text_layer(
+            source_pdf,
+            min_chars_per_page=text_layer_min_chars_per_page,
+            min_page_ratio=text_layer_min_page_ratio,
+            min_alpha_ratio=text_layer_min_alpha_ratio,
+        )
+        if should_skip:
+            return OcrOverlayResult(
+                output_pdf=source_pdf,
+                language_bundle="",
+                detected_language=None,
+                skipped=True,
+                skip_reason=str(text_layer_stats["reason"]),
+                text_layer_avg_chars_per_page=float(text_layer_stats["avg_chars_per_page"]),
+                text_layer_page_ratio=float(text_layer_stats["page_ratio"]),
+                text_layer_alpha_ratio=float(text_layer_stats["alpha_ratio"]),
+            )
+    else:
+        text_layer_stats = {
+            "avg_chars_per_page": 0.0,
+            "page_ratio": 0.0,
+            "alpha_ratio": 0.0,
+        }
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     writer = PdfWriter()
@@ -230,4 +326,9 @@ def create_tesseract_overlay_pdf(
         output_pdf=output_pdf,
         language_bundle=ocr_language,
         detected_language=detected_language,
+        skipped=False,
+        skip_reason=None,
+        text_layer_avg_chars_per_page=float(text_layer_stats["avg_chars_per_page"]),
+        text_layer_page_ratio=float(text_layer_stats["page_ratio"]),
+        text_layer_alpha_ratio=float(text_layer_stats["alpha_ratio"]),
     )

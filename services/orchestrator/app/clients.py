@@ -9,9 +9,13 @@ from pathlib import Path
 from urllib.parse import quote, quote_plus
 
 import requests
+from sqlalchemy import select
 
 from app.config import settings
+from app.db import session_scope
+from app.models import EmailTemplate
 from app.schemas import BibliographicData, DeliveryNotificationPayload, NormalizationResult
+from app.templates import DEFAULT_EMAIL_TEMPLATES, render_template
 
 
 def _clean(value: str | None) -> str:
@@ -595,63 +599,18 @@ class NotificationClient:
 
     def _mail_subject(self, payload: DeliveryNotificationPayload) -> str:
         language = _normalize_language(payload.language)
-        if language == "en":
-            return f"Your document delivery is ready ({payload.request_id})"
-        if language == "pl":
-            return f"Twoje zamowione dokumenty sa gotowe ({payload.request_id})"
-        return f"Ihre Dokumentlieferung ist bereit ({payload.request_id})"
+        template = self._template_for(language)
+        return render_template(template["subject_template"], self._template_context(payload))
 
     def _mail_html(self, payload: DeliveryNotificationPayload) -> str:
         language = _normalize_language(payload.language)
-        greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
-        item_blocks = []
-        for item in payload.items:
-            item_blocks.append(
-                (
-                    '<div style="margin: 0 0 1.25rem 0;">'
-                    f"<strong>{self._translation(language, 'item_label')} {item.item_index + 1}</strong><br>"
-                    f'<div style="margin: 0.4rem 0;">{item.citation_text}</div>'
-                    f'<a href="{self._escape_html(item.download_url)}">{self._translation(language, "download_link")}</a><br>'
-                    f"{self._translation(language, 'valid_until')}: {self._escape_html(item.expires_on)}"
-                    "</div>"
-                )
-            )
-        items_html = "".join(item_blocks)
-        followup_html = self._followup_html(payload)
-        return (
-            f"<p>{self._translation(language, 'greeting')} {self._escape_html(greeting_name)},</p>"
-            f"<p>{self._translation(language, 'delivery_ready_html')}</p>"
-            f"{items_html}"
-            f"{followup_html}"
-            f"<p>{self._translation(language, 'closing_html')}<br>{self._escape_html(self.smtp_from_name)}</p>"
-        )
+        template = self._template_for(language)
+        return render_template(template["body_html_template"], self._template_context(payload))
 
     def _mail_text(self, payload: DeliveryNotificationPayload) -> str:
         language = _normalize_language(payload.language)
-        greeting_name = payload.user_name or ""
-        blocks = []
-        for item in payload.items:
-            blocks.append(
-                "\n".join(
-                    [
-                        f"{self._translation(language, 'item_label')} {item.item_index + 1}",
-                        _strip_html(item.citation_text),
-                        f"{self._translation(language, 'download_label')}: {item.download_url}",
-                        f"{self._translation(language, 'valid_until')}: {item.expires_on}",
-                    ]
-                )
-            )
-        items_text = "\n\n".join(blocks)
-        greeting_line = f"{self._translation(language, 'greeting')} {greeting_name},".strip().rstrip(",") + ","
-        followup_text = self._followup_text(payload)
-        return (
-            f"{greeting_line}\n\n"
-            f"{self._translation(language, 'delivery_ready_text')}\n\n"
-            f"{items_text}\n\n"
-            f"{followup_text}"
-            f"{self._translation(language, 'closing_text')}\n"
-            f"{self.smtp_from_name}"
-        )
+        template = self._template_for(language)
+        return render_template(template["body_text_template"], self._template_context(payload))
 
     def _followup_url(self, payload: DeliveryNotificationPayload) -> str | None:
         if not self.followup_url_template:
@@ -686,6 +645,66 @@ class NotificationClient:
         return (
             f"{self._translation(language, 'followup_intro_text')}:\n{followup_url}\n\n"
         )
+
+    def _template_for(self, language: str) -> dict[str, str]:
+        with session_scope() as session:
+            template = session.scalar(select(EmailTemplate).where(EmailTemplate.language == language))
+        if template:
+            return {
+                "subject_template": template.subject_template,
+                "body_text_template": template.body_text_template,
+                "body_html_template": template.body_html_template,
+            }
+        return DEFAULT_EMAIL_TEMPLATES.get(language, DEFAULT_EMAIL_TEMPLATES["de"])
+
+    def _template_context(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
+        language = _normalize_language(payload.language)
+        greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
+        return {
+            "request_id": payload.request_id,
+            "submission_id": payload.formcycle_submission_id or "",
+            "user_email": payload.user_email,
+            "user_name": payload.user_name or "",
+            "greeting_name": greeting_name,
+            "item_count": str(len(payload.items)),
+            "items_html": self._items_html(payload),
+            "items_text": self._items_text(payload),
+            "followup_html": self._followup_html(payload),
+            "followup_text": self._followup_text(payload),
+            "sender_name": self.smtp_from_name,
+        }
+
+    def _items_html(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
+        item_blocks = []
+        for item in payload.items:
+            item_blocks.append(
+                (
+                    '<div style="margin: 0 0 1.25rem 0;">'
+                    f"<strong>{self._translation(language, 'item_label')} {item.item_index + 1}</strong><br>"
+                    f'<div style="margin: 0.4rem 0;">{item.citation_text}</div>'
+                    f'<a href="{self._escape_html(item.download_url)}">{self._translation(language, "download_link")}</a><br>'
+                    f"{self._translation(language, 'valid_until')}: {self._escape_html(item.expires_on)}"
+                    "</div>"
+                )
+            )
+        return "".join(item_blocks)
+
+    def _items_text(self, payload: DeliveryNotificationPayload) -> str:
+        language = _normalize_language(payload.language)
+        blocks = []
+        for item in payload.items:
+            blocks.append(
+                "\n".join(
+                    [
+                        f"{self._translation(language, 'item_label')} {item.item_index + 1}",
+                        _strip_html(item.citation_text),
+                        f"{self._translation(language, 'download_label')}: {item.download_url}",
+                        f"{self._translation(language, 'valid_until')}: {item.expires_on}",
+                    ]
+                )
+            )
+        return "\n\n".join(blocks)
 
     def _with_rendered_citations(self, payload: DeliveryNotificationPayload) -> DeliveryNotificationPayload:
         language = _normalize_language(payload.language)

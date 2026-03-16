@@ -147,3 +147,17 @@ class JobEventSummary(BaseModel):
     event_type: str
     payload_json: str | None
     created_at: datetime
+
+
+class EmailTemplateSummary(BaseModel):
+    language: str
+    subject_template: str
+    body_text_template: str
+    body_html_template: str
+    updated_at: datetime | None = None
+
+
+class UpdateEmailTemplateRequest(BaseModel):
+    subject_template: str
+    body_text_template: str
+    body_html_template: str

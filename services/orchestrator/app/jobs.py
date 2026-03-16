@@ -18,10 +18,12 @@ from app.schemas import (
     BibliographicData,
     DeliveryItemPayload,
     DeliveryNotificationPayload,
+    EmailTemplateSummary,
     FormCycleRequest,
     JobEventSummary,
     RequestItemSummary,
     RequestSummary,
+    UpdateEmailTemplateRequest,
 )
 
 
@@ -157,6 +159,67 @@ def list_job_events(request_id: str) -> list[JobEventSummary]:
             )
             for event in events
         ]
+
+
+def list_email_templates() -> list[EmailTemplateSummary]:
+    from app.models import EmailTemplate
+    from app.templates import DEFAULT_EMAIL_TEMPLATES
+
+    templates: list[EmailTemplateSummary] = []
+    with session_scope() as session:
+        stored = {
+            template.language: template
+            for template in session.scalars(select(EmailTemplate).order_by(EmailTemplate.language.asc()))
+        }
+        for language in ("de", "en", "pl"):
+            template = stored.get(language)
+            if template:
+                templates.append(
+                    EmailTemplateSummary(
+                        language=template.language,
+                        subject_template=template.subject_template,
+                        body_text_template=template.body_text_template,
+                        body_html_template=template.body_html_template,
+                        updated_at=template.updated_at,
+                    )
+                )
+            else:
+                default_template = DEFAULT_EMAIL_TEMPLATES[language]
+                templates.append(
+                    EmailTemplateSummary(
+                        language=language,
+                        subject_template=default_template["subject_template"],
+                        body_text_template=default_template["body_text_template"],
+                        body_html_template=default_template["body_html_template"],
+                        updated_at=None,
+                    )
+                )
+    return templates
+
+
+def update_email_template(language: str, payload: UpdateEmailTemplateRequest) -> EmailTemplateSummary:
+    from app.models import EmailTemplate
+
+    normalized_language = language.strip().lower()
+    if normalized_language not in {"de", "en", "pl"}:
+        raise ValueError("Unsupported language")
+
+    with session_scope() as session:
+        template = session.scalar(select(EmailTemplate).where(EmailTemplate.language == normalized_language))
+        if template is None:
+            template = EmailTemplate(language=normalized_language)
+            session.add(template)
+        template.subject_template = payload.subject_template
+        template.body_text_template = payload.body_text_template
+        template.body_html_template = payload.body_html_template
+        session.flush()
+        return EmailTemplateSummary(
+            language=template.language,
+            subject_template=template.subject_template,
+            body_text_template=template.body_text_template,
+            body_html_template=template.body_html_template,
+            updated_at=template.updated_at,
+        )
 
 
 def retry_request(request_id: str) -> bool:
@@ -886,6 +949,10 @@ def _maybe_run_ocr(source_pdf: Path) -> tuple[Path, OcrOverlayResult | None]:
             detect_sample_pages=settings.ocr_language_detect_pages,
             poppler_path=settings.ocr_poppler_path,
             tesseract_cmd=settings.ocr_tesseract_cmd,
+            skip_if_text_layer=settings.ocr_skip_if_text_layer,
+            text_layer_min_chars_per_page=settings.ocr_text_layer_min_chars_per_page,
+            text_layer_min_page_ratio=settings.ocr_text_layer_min_page_ratio,
+            text_layer_min_alpha_ratio=settings.ocr_text_layer_min_alpha_ratio,
         )
         return result.output_pdf, result
     raise RuntimeError(f"Unsupported OCR mode: {settings.ocr_mode}")
@@ -897,11 +964,15 @@ def _log_ocr_event(request_id: str, request_item_id: int, result: OcrOverlayResu
             session,
             request_id=request_id,
             request_item_id=request_item_id,
-            event_type="ocr_applied",
+            event_type="ocr_skipped" if result.skipped else "ocr_applied",
             payload={
                 "language_bundle": result.language_bundle,
                 "detected_language": result.detected_language,
                 "output_pdf": str(result.output_pdf),
+                "skip_reason": result.skip_reason,
+                "text_layer_avg_chars_per_page": result.text_layer_avg_chars_per_page,
+                "text_layer_page_ratio": result.text_layer_page_ratio,
+                "text_layer_alpha_ratio": result.text_layer_alpha_ratio,
             },
         )
 

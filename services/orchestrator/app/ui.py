@@ -11,6 +11,64 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 
 
+def _auth_settings() -> dict:
+    try:
+        auth_settings = st.secrets.get("auth", {})
+    except Exception:
+        return {}
+    if hasattr(auth_settings, "to_dict"):
+        auth_settings = auth_settings.to_dict()
+    return auth_settings if isinstance(auth_settings, dict) else {}
+
+
+def _auth_enabled() -> bool:
+    auth_settings = _auth_settings()
+    return bool(auth_settings.get("redirect_uri") and auth_settings.get("cookie_secret"))
+
+
+def _auth_provider() -> str | None:
+    provider = _auth_settings().get("provider")
+    if isinstance(provider, str) and provider.strip():
+        return provider.strip()
+    return None
+
+
+def _login() -> None:
+    provider = _auth_provider()
+    if provider:
+        st.login(provider)
+    else:
+        st.login()
+
+
+def _current_user_label() -> str:
+    if hasattr(st.user, "name") and st.user.name:
+        return str(st.user.name)
+    if hasattr(st.user, "email") and st.user.email:
+        return str(st.user.email)
+    if hasattr(st.user, "sub") and st.user.sub:
+        return str(st.user.sub)
+    return "Authenticated user"
+
+
+def _require_authentication() -> None:
+    if not _auth_enabled():
+        return
+    if getattr(st.user, "is_logged_in", False):
+        return
+    st.title("Document Delivery Ops")
+    st.caption("Authentication required")
+    st.info("Sign in to access the operator interface.")
+    st.button(
+        "Log in",
+        type="primary",
+        use_container_width=True,
+        icon=":material/login:",
+        on_click=_login,
+    )
+    st.stop()
+
+
 def _parse_json_object(payload: str | None) -> dict | None:
     if not payload:
         return None
@@ -105,6 +163,23 @@ def fetch_requests() -> list[dict]:
     return response.json()
 
 
+def fetch_email_templates() -> list[dict]:
+    response = requests.get(f"{API_BASE_URL}/email-templates", headers=_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def save_email_template(language: str, payload: dict) -> dict:
+    response = requests.put(
+        f"{API_BASE_URL}/email-templates/{language}",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def fetch_request(request_id: str) -> dict:
     response = requests.get(f"{API_BASE_URL}/requests/{request_id}", headers=_headers(), timeout=30)
     response.raise_for_status()
@@ -162,43 +237,84 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+_require_authentication()
+
 st.title("Document Delivery Ops")
 st.caption("FastAPI + worker + SQLite pipeline status")
 
-_, right = st.columns([3, 1])
-with right:
-    if st.button("Refresh now", use_container_width=True):
-        st.rerun()
+with st.sidebar:
+    page = st.radio("Page", ["Requests", "Email templates"], index=0)
+    if _auth_enabled():
+        st.divider()
+        st.subheader("Account")
+        st.caption(_current_user_label())
+        st.button(
+            "Log out",
+            use_container_width=True,
+            icon=":material/logout:",
+            on_click=st.logout,
+        )
 
-requests_data = fetch_requests()
-status_counts: dict[str, int] = {}
-for request in requests_data:
-    status_counts[request["status"]] = status_counts.get(request["status"], 0) + 1
 
-metrics = st.columns(5)
-metrics[0].metric("Requests", len(requests_data))
-metrics[1].metric("Waiting", status_counts.get("WAITING_FOR_ATTACHMENT", 0))
-metrics[2].metric("Review", status_counts.get("NEEDS_REVIEW", 0))
-metrics[3].metric("Notify Failed", status_counts.get("NOTIFY_FAILED", 0))
-metrics[4].metric("Processed", status_counts.get("PROCESSED", 0))
+def _render_template_editor() -> None:
+    st.subheader("Email templates")
+    st.caption("Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {followup_text}, {followup_html}, {sender_name}")
+    templates = fetch_email_templates()
+    templates_by_language = {template["language"]: template for template in templates}
+    language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: {"de": "German", "en": "English", "pl": "Polish"}[value])
+    template = templates_by_language[language]
+    with st.form(f"email-template-{language}"):
+        subject_template = st.text_input("Subject template", value=template["subject_template"])
+        body_text_template = st.text_area("Text template", value=template["body_text_template"], height=300)
+        body_html_template = st.text_area("HTML template", value=template["body_html_template"], height=300)
+        submitted = st.form_submit_button("Save template")
+        if submitted:
+            save_email_template(
+                language,
+                {
+                    "subject_template": subject_template,
+                    "body_text_template": body_text_template,
+                    "body_html_template": body_html_template,
+                },
+            )
+            st.success("Template saved")
+            st.rerun()
 
-table_rows = [
-    {
-        "request_id": request["request_id"],
-        "status": request["status"],
-        "user_email": request["user_email"],
-        "items": len(request["items"]),
-        "updated_at": request["updated_at"],
-    }
-    for request in requests_data
-]
-st.subheader("Queue")
-st.dataframe(table_rows, use_container_width=True, hide_index=True)
+    st.caption(f"Last updated: {template['updated_at'] or 'default template'}")
 
-request_ids = [request["request_id"] for request in requests_data]
-selected_request = st.selectbox("Request", request_ids) if request_ids else None
 
-if selected_request:
+def _render_requests_page() -> None:
+    requests_data = fetch_requests()
+    status_counts: dict[str, int] = {}
+    for request in requests_data:
+        status_counts[request["status"]] = status_counts.get(request["status"], 0) + 1
+
+    metrics = st.columns(5)
+    metrics[0].metric("Requests", len(requests_data))
+    metrics[1].metric("Waiting", status_counts.get("WAITING_FOR_ATTACHMENT", 0))
+    metrics[2].metric("Review", status_counts.get("NEEDS_REVIEW", 0))
+    metrics[3].metric("Notify Failed", status_counts.get("NOTIFY_FAILED", 0))
+    metrics[4].metric("Processed", status_counts.get("PROCESSED", 0))
+
+    table_rows = [
+        {
+            "request_id": request["request_id"],
+            "status": request["status"],
+            "user_email": request["user_email"],
+            "items": len(request["items"]),
+            "updated_at": request["updated_at"],
+        }
+        for request in requests_data
+    ]
+    st.subheader("Queue")
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+    request_ids = [request["request_id"] for request in requests_data]
+    selected_request = st.selectbox("Request", request_ids) if request_ids else None
+
+    if not selected_request:
+        return
+
     request = fetch_request(selected_request)
     events = fetch_events(selected_request)
 
@@ -404,3 +520,12 @@ if selected_request:
         for event in events
     ]
     st.dataframe(event_rows, use_container_width=True, hide_index=True)
+_, right = st.columns([3, 1])
+with right:
+    if st.button("Refresh now", use_container_width=True):
+        st.rerun()
+
+if page == "Email templates":
+    _render_template_editor()
+else:
+    _render_requests_page()
