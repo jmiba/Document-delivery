@@ -74,19 +74,22 @@ def _migrate_sqlite() -> None:
 
 def _seed_email_templates() -> None:
     from app.models import EmailTemplate
-    from app.templates import DEFAULT_EMAIL_TEMPLATES
+    from app.templates import DEFAULT_EMAIL_TEMPLATES, sanitize_template_placeholders
 
     with SessionLocal() as session:
         for language, template in DEFAULT_EMAIL_TEMPLATES.items():
             existing = session.query(EmailTemplate).filter(EmailTemplate.language == language).one_or_none()
             if existing:
+                existing.subject_template = sanitize_template_placeholders(existing.subject_template)
+                existing.body_text_template = sanitize_template_placeholders(existing.body_text_template)
+                existing.body_html_template = sanitize_template_placeholders(existing.body_html_template)
                 continue
             session.add(
                 EmailTemplate(
                     language=language,
-                    subject_template=template["subject_template"],
-                    body_text_template=template["body_text_template"],
-                    body_html_template=template["body_html_template"],
+                    subject_template=sanitize_template_placeholders(template["subject_template"]),
+                    body_text_template=sanitize_template_placeholders(template["body_text_template"]),
+                    body_html_template=sanitize_template_placeholders(template["body_html_template"]),
                 )
             )
         session.commit()

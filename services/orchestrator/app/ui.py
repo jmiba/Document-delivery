@@ -240,6 +240,47 @@ def _attachment_state(item: dict) -> str:
     return "Waiting"
 
 
+def _attachment_timeline_rows(request: dict, events: list[dict]) -> list[dict]:
+    interesting = {
+        "scan_uploaded": "Scan uploaded",
+        "scan_removed": "Scan removed",
+        "zotero_attachment_uploaded": "Attachment uploaded to Zotero",
+        "zotero_attachment_reused": "Existing Zotero attachment reused",
+    }
+    items_by_id = {item["id"]: item for item in request["items"]}
+    rows: list[dict] = []
+    for event in events:
+        event_type = event.get("event_type")
+        if event_type not in interesting:
+            continue
+        payload = _parse_json_object(event.get("payload_json")) or {}
+        item = items_by_id.get(event.get("request_item_id"))
+        item_label = (
+            f"#{item['item_index']} {item['title']}"
+            if item
+            else f"Item {event.get('request_item_id')}"
+        )
+        details = ""
+        if event_type == "scan_uploaded":
+            details = payload.get("filename") or ""
+        elif event_type == "scan_removed":
+            details = payload.get("filename") or ""
+        elif event_type in {"zotero_attachment_uploaded", "zotero_attachment_reused"}:
+            attachment_key = payload.get("zotero_attachment_key") or ""
+            reason = payload.get("reason") or ""
+            filename = payload.get("filename") or ""
+            details = " | ".join(part for part in [filename, attachment_key, reason] if part)
+        rows.append(
+            {
+                "created_at": event.get("created_at"),
+                "item": item_label,
+                "action": interesting[event_type],
+                "details": details,
+            }
+        )
+    return rows
+
+
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
 
 st.markdown(
@@ -291,7 +332,7 @@ with st.sidebar:
 
 def _render_template_editor() -> None:
     st.subheader("Email templates")
-    st.caption("Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {followup_text}, {followup_html}, {sender_name}")
+    st.caption("Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {sender_name}")
     templates = fetch_email_templates()
     templates_by_language = {template["language"]: template for template in templates}
     language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: {"de": "German", "en": "English", "pl": "Polish"}[value])
@@ -578,6 +619,11 @@ def _render_requests_page() -> None:
                         remove_scan(request["request_id"], item["id"])
                         st.success("Uploaded scan removed.")
                         st.rerun()
+
+    attachment_timeline = _attachment_timeline_rows(request, events)
+    if attachment_timeline:
+        st.subheader("Attachment timeline")
+        st.dataframe(attachment_timeline, use_container_width=True, hide_index=True)
 
     st.subheader("Events")
     event_rows = [

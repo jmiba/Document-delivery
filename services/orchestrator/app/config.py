@@ -39,7 +39,6 @@ class Settings(BaseSettings):
     citation_locale_pl: str = "pl-PL"
 
     formcycle_webhook_secret: str | None = None
-    formcycle_followup_url_template: str | None = None
     internal_api_token: str | None = None
 
     smtp_host: str | None = None

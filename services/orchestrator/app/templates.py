@@ -15,7 +15,6 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Guten Tag {greeting_name},\n\n"
             "die angeforderte Dokumentlieferung ist bereit.\n\n"
             "{items_text}\n\n"
-            "{followup_text}"
             "Mit freundlichen Gruessen\n"
             "{sender_name}"
         ),
@@ -23,7 +22,6 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Guten Tag {greeting_name},</p>"
             "<p>die angeforderte Dokumentlieferung ist bereit.</p>"
             "{items_html}"
-            "{followup_html}"
             "<p>Mit freundlichen Gruessen<br>{sender_name}</p>"
         ),
     },
@@ -33,7 +31,6 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Hello {greeting_name},\n\n"
             "your requested document delivery is ready.\n\n"
             "{items_text}\n\n"
-            "{followup_text}"
             "Kind regards\n"
             "{sender_name}"
         ),
@@ -41,7 +38,6 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Hello {greeting_name},</p>"
             "<p>your requested document delivery is ready.</p>"
             "{items_html}"
-            "{followup_html}"
             "<p>Kind regards<br>{sender_name}</p>"
         ),
     },
@@ -51,7 +47,6 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Dzien dobry {greeting_name},\n\n"
             "zamowione materialy sa gotowe do pobrania.\n\n"
             "{items_text}\n\n"
-            "{followup_text}"
             "Z powazaniem\n"
             "{sender_name}"
         ),
@@ -59,12 +54,15 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Dzien dobry {greeting_name},</p>"
             "<p>zamowione materialy sa gotowe do pobrania.</p>"
             "{items_html}"
-            "{followup_html}"
             "<p>Z powazaniem<br>{sender_name}</p>"
         ),
     },
 }
 
 
+def sanitize_template_placeholders(template: str) -> str:
+    return template.replace("{followup_text}", "").replace("{followup_html}", "")
+
+
 def render_template(template: str, values: Mapping[str, str]) -> str:
-    return template.format_map(_SafeTemplateDict(values))
+    return sanitize_template_placeholders(template).format_map(_SafeTemplateDict(values))

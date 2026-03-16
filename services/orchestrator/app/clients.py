@@ -7,7 +7,7 @@ import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote
 
 import requests
 from sqlalchemy import select
@@ -642,7 +642,6 @@ class NotificationClient:
         self.smtp_from_email = settings.smtp_from_email
         self.smtp_from_name = settings.smtp_from_name
         self.smtp_reply_to = settings.smtp_reply_to
-        self.followup_url_template = settings.formcycle_followup_url_template
         self.citation_style = settings.citation_style
         self.citation_locales = {
             "de": settings.citation_locale_de,
@@ -703,40 +702,6 @@ class NotificationClient:
         template = self._template_for(language)
         return render_template(template["body_text_template"], self._template_context(payload))
 
-    def _followup_url(self, payload: DeliveryNotificationPayload) -> str | None:
-        if not self.followup_url_template:
-            return None
-        values = {
-            "request_id": payload.request_id,
-            "formcycle_submission_id": payload.formcycle_submission_id or "",
-            "user_email": payload.user_email,
-            "request_id_q": quote_plus(payload.request_id),
-            "formcycle_submission_id_q": quote_plus(payload.formcycle_submission_id or ""),
-            "user_email_q": quote_plus(payload.user_email),
-        }
-        return self.followup_url_template.format(**values)
-
-    def _followup_html(self, payload: DeliveryNotificationPayload) -> str:
-        language = _normalize_language(payload.language)
-        followup_url = self._followup_url(payload)
-        if not followup_url:
-            return ""
-        escaped_url = self._escape_html(followup_url)
-        return (
-            f"<p>{self._translation(language, 'followup_intro_html')}<br>"
-            f'<a href="{escaped_url}">{escaped_url}</a>'
-            "</p>"
-        )
-
-    def _followup_text(self, payload: DeliveryNotificationPayload) -> str:
-        language = _normalize_language(payload.language)
-        followup_url = self._followup_url(payload)
-        if not followup_url:
-            return ""
-        return (
-            f"{self._translation(language, 'followup_intro_text')}:\n{followup_url}\n\n"
-        )
-
     def _template_for(self, language: str) -> dict[str, str]:
         with session_scope() as session:
             template = session.scalar(select(EmailTemplate).where(EmailTemplate.language == language))
@@ -760,8 +725,6 @@ class NotificationClient:
             "item_count": str(len(payload.items)),
             "items_html": self._items_html(payload),
             "items_text": self._items_text(payload),
-            "followup_html": self._followup_html(payload),
-            "followup_text": self._followup_text(payload),
             "sender_name": self.smtp_from_name,
         }
 
@@ -828,8 +791,6 @@ class NotificationClient:
                 "download_link": "PDF herunterladen",
                 "download_label": "Download",
                 "valid_until": "Link gueltig bis",
-                "followup_intro_html": "Falls Sie Rueckfragen haben, Metadaten korrigieren moechten oder eine erneute Bereitstellung benoetigen, nutzen Sie bitte dieses Formular",
-                "followup_intro_text": "Falls Sie Rueckfragen haben, Metadaten korrigieren moechten oder eine erneute Bereitstellung benoetigen, nutzen Sie bitte dieses Formular",
                 "closing_html": "Mit freundlichen Gruessen",
                 "closing_text": "Mit freundlichen Gruessen",
             },
@@ -842,8 +803,6 @@ class NotificationClient:
                 "download_link": "Download PDF",
                 "download_label": "Download",
                 "valid_until": "Link valid until",
-                "followup_intro_html": "If you have follow-up questions, need to correct metadata, or need the files to be re-sent, please use this form",
-                "followup_intro_text": "If you have follow-up questions, need to correct metadata, or need the files to be re-sent, please use this form",
                 "closing_html": "Kind regards",
                 "closing_text": "Kind regards",
             },
@@ -856,8 +815,6 @@ class NotificationClient:
                 "download_link": "Pobierz PDF",
                 "download_label": "Pobieranie",
                 "valid_until": "Link wazny do",
-                "followup_intro_html": "Jesli masz pytania, chcesz poprawic metadane lub potrzebujesz ponownego udostepnienia plikow, skorzystaj z tego formularza",
-                "followup_intro_text": "Jesli masz pytania, chcesz poprawic metadane lub potrzebujesz ponownego udostepnienia plikow, skorzystaj z tego formularza",
                 "closing_html": "Z powazaniem",
                 "closing_text": "Z powazaniem",
             },

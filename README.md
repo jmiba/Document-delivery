@@ -5,7 +5,7 @@ Code-first starter for a university-library document delivery workflow:
 - FastAPI stores requests and requested items in SQLite.
 - A polling worker normalizes metadata, checks Zotero, processes uploaded or existing PDF attachments, and delivers finished PDFs through Nextcloud.
 - Streamlit provides the operator view for queue status, failures, and retries.
-- Delivery notifications are sent directly by SMTP from the app, with an optional personalized FormCycle follow-up link for later conversation steps.
+- Delivery notifications are sent directly by SMTP from the app.
 
 ## Stack
 
@@ -27,13 +27,12 @@ Code-first starter for a university-library document delivery workflow:
 9. If the scan came through the app, the worker uploads the processed PDF back to Zotero as the canonical attachment for later reuse.
 10. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
 11. The worker sends the final requester email directly through SMTP when configured.
-12. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
 
 ## Architecture
 
 The active system has four roles:
 
-- FormCycle handles intake and later user follow-up forms.
+- FormCycle handles intake.
 - FastAPI ingests requests and exposes operator endpoints.
 - SQLite stores request state, item state, and job events.
 - The worker performs metadata resolution, Zotero coordination, OCR, Nextcloud delivery, and SMTP notification.
@@ -189,8 +188,7 @@ Important item statuses:
 - `SMTP_FROM_EMAIL` is required when SMTP is enabled.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
-- `FORMCYCLE_FOLLOWUP_URL_TEMPLATE` can embed a personalized FormCycle follow-up link into the delivery mail. Supported placeholders are `{request_id}`, `{formcycle_submission_id}`, `{user_email}`, and URL-encoded variants `{request_id_q}`, `{formcycle_submission_id_q}`, `{user_email_q}`.
-- Email templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page. Available placeholders are `{request_id}`, `{submission_id}`, `{user_email}`, `{user_name}`, `{greeting_name}`, `{item_count}`, `{items_text}`, `{items_html}`, `{followup_text}`, `{followup_html}`, and `{sender_name}`.
+- Email templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page. Available placeholders are `{request_id}`, `{submission_id}`, `{user_email}`, `{user_name}`, `{greeting_name}`, `{item_count}`, `{items_text}`, `{items_html}`, and `{sender_name}`.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
 - `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
 - `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.
