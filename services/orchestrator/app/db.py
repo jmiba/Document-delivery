@@ -50,6 +50,8 @@ def _migrate_sqlite() -> None:
             "raw_json": "ALTER TABLE request_items ADD COLUMN raw_json TEXT",
             "review_notes": "ALTER TABLE request_items ADD COLUMN review_notes TEXT",
             "resolution_json": "ALTER TABLE request_items ADD COLUMN resolution_json TEXT",
+            "uploaded_scan_path": "ALTER TABLE request_items ADD COLUMN uploaded_scan_path TEXT",
+            "uploaded_scan_filename": "ALTER TABLE request_items ADD COLUMN uploaded_scan_filename TEXT",
             "editors": "ALTER TABLE request_items ADD COLUMN editors TEXT",
             "publisher": "ALTER TABLE request_items ADD COLUMN publisher TEXT",
             "place": "ALTER TABLE request_items ADD COLUMN place TEXT",

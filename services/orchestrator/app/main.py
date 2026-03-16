@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 
 from app.config import settings
 from app.db import init_db
@@ -13,7 +13,9 @@ from app.jobs import (
     list_email_templates,
     list_job_events,
     list_requests,
+    remove_uploaded_scan_for_item,
     retry_request,
+    upload_scan_for_item,
     update_email_template,
 )
 from app.schemas import ApproveMetadataRequest, FormCycleRequest, UpdateEmailTemplateRequest
@@ -88,6 +90,47 @@ def approve_request_item(
     if not approve_metadata_item(request_id, item_id, approval):
         raise HTTPException(status_code=404, detail="Request item not found")
     return {"request_id": request_id, "item_id": item_id, "approved": True}
+
+
+@app.post("/requests/{request_id}/items/{item_id}/scan")
+async def upload_request_item_scan(
+    request_id: str,
+    item_id: int,
+    file: UploadFile = File(...),
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    filename = (file.filename or "").strip()
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF uploads are supported")
+    header = await file.read(5)
+    if header != b"%PDF-":
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF")
+    await file.seek(0)
+    pdf_bytes = await file.read()
+    try:
+        stored = upload_scan_for_item(request_id, item_id, filename, pdf_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not stored:
+        raise HTTPException(status_code=404, detail="Request item not found")
+    return {"request_id": request_id, "item_id": item_id, "uploaded": True}
+
+
+@app.delete("/requests/{request_id}/items/{item_id}/scan")
+def delete_request_item_scan(
+    request_id: str,
+    item_id: int,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        removed = remove_uploaded_scan_for_item(request_id, item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Request item not found")
+    return {"request_id": request_id, "item_id": item_id, "removed": True}
 
 
 @app.get("/email-templates")

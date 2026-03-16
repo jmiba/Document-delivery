@@ -114,6 +114,7 @@ class RequestItemSummary(BaseModel):
     normalization_confidence: str | None
     zotero_item_key: str | None
     zotero_attachment_key: str | None
+    uploaded_scan_filename: str | None
     download_url: str | None
     expires_on: str | None
     last_error: str | None

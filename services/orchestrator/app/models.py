@@ -69,6 +69,8 @@ class RequestItem(Base):
     resolution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     zotero_item_key: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     zotero_attachment_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    uploaded_scan_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uploaded_scan_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     citation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_on: Mapped[str | None] = mapped_column(String(32), nullable=True)

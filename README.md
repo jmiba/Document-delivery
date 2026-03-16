@@ -3,7 +3,7 @@
 Code-first starter for a university-library document delivery workflow:
 - FormCycle sends delivery requests to FastAPI.
 - FastAPI stores requests and requested items in SQLite.
-- A polling worker normalizes metadata, checks Zotero, waits for PDF attachments, and delivers finished PDFs through Nextcloud.
+- A polling worker normalizes metadata, checks Zotero, processes uploaded or existing PDF attachments, and delivers finished PDFs through Nextcloud.
 - Streamlit provides the operator view for queue status, failures, and retries.
 - Delivery notifications are sent directly by SMTP from the app, with an optional personalized FormCycle follow-up link for later conversation steps.
 
@@ -22,11 +22,12 @@ Code-first starter for a university-library document delivery workflow:
 4. Low-confidence normalization results are held in `NEEDS_REVIEW` until an operator approves or edits them in Streamlit.
 5. Once metadata is approved, the worker checks Zotero for an existing matching item.
 6. If no match exists, the worker creates a new Zotero item tagged `in process`.
-7. The worker polls Zotero until a PDF attachment exists.
+7. Staff can upload a scan directly in Streamlit for items in `WAITING_FOR_ATTACHMENT`. As a fallback, the worker can still poll Zotero for an existing PDF attachment.
 8. The worker optionally runs OCR through the native Tesseract overlay pass.
-9. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
-10. The worker sends the final requester email directly through SMTP when configured.
-11. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
+9. If the scan came through the app, the worker uploads the processed PDF back to Zotero as the canonical attachment for later reuse.
+10. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
+11. The worker sends the final requester email directly through SMTP when configured.
+12. The email can include a personalized FormCycle follow-up link for clarification, confirmation, or redelivery requests.
 
 ## Architecture
 
@@ -180,6 +181,8 @@ Important item statuses:
 - `RESOLUTION_PRIORITY_LOBID`, `RESOLUTION_PRIORITY_GBV`, `RESOLUTION_PRIORITY_CROSSREF`, and `RESOLUTION_PRIORITY_OPENALEX` control which validated source wins when multiple sources match. For `bookSection`, Lobid and GBV are evaluated ahead of Crossref/OpenAlex by default.
 - `NORMALIZATION_AUTO_ACCEPT_THRESHOLD` controls when a metadata match can bypass human review.
 - `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
+- Items in `WAITING_FOR_ATTACHMENT` can now take a PDF upload in the Streamlit UI. The app stores the uploaded scan locally, OCRs it if needed, pushes the processed PDF back to Zotero, and then continues delivery.
+- Uploaded scans are visible in the item table as `App upload: <filename>`. Operators can replace or remove an uploaded scan before delivery if needed.
 - `CITATION_STYLE` controls the CSL style Zotero uses when the app renders bibliography entries for the delivery mail.
 - `CITATION_LOCALE_DE`, `CITATION_LOCALE_EN`, and `CITATION_LOCALE_PL` map the FormCycle form language to the Zotero citation locale.
 - `SMTP_HOST` enables direct email delivery from the app.

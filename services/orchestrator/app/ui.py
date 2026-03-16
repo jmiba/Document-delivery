@@ -207,6 +207,39 @@ def approve_item(request_id: str, item_id: int, payload: dict) -> None:
     response.raise_for_status()
 
 
+def upload_scan(request_id: str, item_id: int, uploaded_file) -> None:
+    response = requests.post(
+        f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/scan",
+        headers=_headers(),
+        files={
+            "file": (
+                uploaded_file.name,
+                uploaded_file.getvalue(),
+                uploaded_file.type or "application/pdf",
+            )
+        },
+        timeout=300,
+    )
+    response.raise_for_status()
+
+
+def remove_scan(request_id: str, item_id: int) -> None:
+    response = requests.delete(
+        f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/scan",
+        headers=_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def _attachment_state(item: dict) -> str:
+    if item.get("uploaded_scan_filename"):
+        return f"App upload: {item['uploaded_scan_filename']}"
+    if item.get("zotero_attachment_key"):
+        return "Zotero attachment"
+    return "Waiting"
+
+
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
 
 st.markdown(
@@ -349,6 +382,7 @@ def _render_requests_page() -> None:
             "metadata_source": item["metadata_source"],
             "confidence": item["normalization_confidence"],
             "zotero_item_key": item["zotero_item_key"],
+            "attachment_state": _attachment_state(item),
             "download_url": item["download_url"],
             "expires_on": item["expires_on"],
             "last_error": item["last_error"],
@@ -508,6 +542,42 @@ def _render_requests_page() -> None:
                     ),
                 )
                 st.rerun()
+
+    upload_candidates = [
+        item
+        for item in request["items"]
+        if item["status"] in {"WAITING_FOR_ATTACHMENT", "FAILED"} and item["zotero_item_key"]
+    ]
+    if upload_candidates:
+        st.subheader("Upload scans")
+        st.caption("Preferred path: upload the scanned PDF here. The worker will OCR it if needed, attach the processed PDF to Zotero, and continue delivery.")
+        for item in upload_candidates:
+            st.markdown(f"**#{item['item_index']} {item['title']}**")
+            if item.get("uploaded_scan_filename"):
+                st.caption(f"Current uploaded scan: {item['uploaded_scan_filename']}")
+            uploader_col, remove_col = st.columns([4, 1])
+            with uploader_col:
+                uploader = st.file_uploader(
+                    "PDF scan",
+                    type=["pdf"],
+                    key=f"scan-upload-{item['id']}",
+                    help="Upload the scanned PDF for this Zotero item.",
+                )
+                upload_label = "Replace scan" if item.get("uploaded_scan_filename") else "Upload scan"
+                if st.button(upload_label, key=f"scan-upload-button-{item['id']}"):
+                    if uploader is None:
+                        st.warning("Choose a PDF first.")
+                    else:
+                        upload_scan(request["request_id"], item["id"], uploader)
+                        st.success("Scan uploaded. The worker will process it next.")
+                        st.rerun()
+            with remove_col:
+                if item.get("uploaded_scan_filename"):
+                    st.write("")
+                    if st.button("Remove scan", key=f"scan-remove-{item['id']}", use_container_width=True):
+                        remove_scan(request["request_id"], item["id"])
+                        st.success("Uploaded scan removed.")
+                        st.rerun()
 
     st.subheader("Events")
     event_rows = [

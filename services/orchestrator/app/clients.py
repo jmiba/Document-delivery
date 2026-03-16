@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import re
 import smtplib
 from datetime import datetime
@@ -340,6 +341,44 @@ class ZoteroClient:
                     handle.write(chunk)
         return destination
 
+    def upload_pdf_attachment(self, parent_item_key: str, source_pdf: Path, title: str | None = None) -> str:
+        attachment_key = self._create_attachment_item(parent_item_key, source_pdf.name, title=title)
+        upload_response = self._authorize_attachment_upload(attachment_key, source_pdf)
+        if upload_response.status_code == 204:
+            return attachment_key
+        upload_data = upload_response.json() if upload_response.content else {}
+        if upload_data.get("exists") in {1, "1", True}:
+            return attachment_key
+        upload_url = upload_data.get("url")
+        upload_key = upload_data.get("uploadKey")
+        if not upload_url or not upload_key:
+            raise RuntimeError(f"Unexpected Zotero upload authorization response for {attachment_key}: {upload_data}")
+
+        prefix = upload_data.get("prefix", "")
+        suffix = upload_data.get("suffix", "")
+        content_type = upload_data.get("contentType") or "application/octet-stream"
+        payload = prefix.encode("utf-8") + source_pdf.read_bytes() + suffix.encode("utf-8")
+        upload_result = requests.post(
+            upload_url,
+            data=payload,
+            headers={"Content-Type": content_type},
+            timeout=300,
+        )
+        upload_result.raise_for_status()
+
+        finalize = requests.post(
+            f"{self.base}/items/{attachment_key}/file",
+            headers=self._headers(
+                content_type="application/x-www-form-urlencoded",
+                extra_headers={"If-None-Match": "*"},
+            ),
+            params={"key": self.api_key},
+            data={"upload": upload_key},
+            timeout=60,
+        )
+        finalize.raise_for_status()
+        return attachment_key
+
     def render_bibliography_item(self, item_key: str, style: str, locale: str) -> tuple[str, str]:
         response = requests.get(
             f"{self.base}/items/{item_key}",
@@ -358,6 +397,52 @@ class ZoteroClient:
         if not bibliography_html:
             raise RuntimeError(f"Zotero bibliography rendering returned an empty response for item {item_key}.")
         return bibliography_html, _strip_html(bibliography_html)
+
+    def _create_attachment_item(self, parent_item_key: str, filename: str, title: str | None = None) -> str:
+        endpoint = f"{self.base}/items"
+        item = {
+            "itemType": "attachment",
+            "parentItem": parent_item_key,
+            "linkMode": "imported_file",
+            "title": title or filename,
+            "filename": filename,
+            "contentType": "application/pdf",
+            "tags": [{"tag": self.in_process_tag}],
+        }
+        response = requests.post(
+            endpoint,
+            headers=self._headers(content_type="application/json"),
+            params={"key": self.api_key},
+            json=[item],
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        successful = payload.get("successful", {})
+        if not successful:
+            raise RuntimeError(f"No successful Zotero attachment create response: {payload}")
+        first_key = next(iter(successful))
+        return successful[first_key]["key"]
+
+    def _authorize_attachment_upload(self, attachment_key: str, source_pdf: Path) -> requests.Response:
+        payload = {
+            "md5": hashlib.md5(source_pdf.read_bytes()).hexdigest(),
+            "filename": source_pdf.name,
+            "filesize": str(source_pdf.stat().st_size),
+            "mtime": str(int(source_pdf.stat().st_mtime * 1000)),
+        }
+        response = requests.post(
+            f"{self.base}/items/{attachment_key}/file",
+            headers=self._headers(
+                content_type="application/x-www-form-urlencoded",
+                extra_headers={"If-None-Match": "*"},
+            ),
+            params={"key": self.api_key},
+            data=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response
 
     def _search_items(self, query: str) -> list[dict]:
         if not query:
@@ -533,10 +618,16 @@ class ZoteroClient:
         }
         return aliases.get(key, value)
 
-    def _headers(self, content_type: str | None = None) -> dict[str, str]:
+    def _headers(
+        self,
+        content_type: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         headers = {"Zotero-API-Version": "3"}
         if content_type:
             headers["Content-Type"] = content_type
+        if extra_headers:
+            headers.update(extra_headers)
         return headers
 
 

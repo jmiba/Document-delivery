@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -233,8 +234,15 @@ def retry_request(request_id: str) -> bool:
             return False
 
         for item in request.items:
-            if item.status in {"FAILED", "NEEDS_REVIEW"}:
-                item.status = "WAITING_FOR_ATTACHMENT" if item.zotero_item_key else "PENDING_METADATA"
+            if item.status == "FAILED":
+                if item.uploaded_scan_path:
+                    item.status = "PROCESSING_PDF"
+                else:
+                    item.status = "WAITING_FOR_ATTACHMENT" if item.zotero_item_key else "PENDING_METADATA"
+                item.last_error = None
+                item.next_poll_at = None
+            elif item.status == "NEEDS_REVIEW":
+                item.status = "PENDING_METADATA"
                 item.last_error = None
                 item.next_poll_at = None
             elif item.status == "READY_TO_NOTIFY":
@@ -295,6 +303,94 @@ def approve_metadata_item(request_id: str, item_id: int, approval: ApproveMetada
         return True
 
 
+def upload_scan_for_item(request_id: str, item_id: int, filename: str, pdf_bytes: bytes) -> bool:
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        if not item.zotero_item_key:
+            raise ValueError("The Zotero item must exist before a scan can be uploaded.")
+        if item.status == "DELIVERED":
+            raise ValueError("Delivered items cannot accept a replacement scan.")
+
+        relative_path = _uploaded_scan_relative_path(request_id, item.id)
+        destination = Path(settings.work_dir) / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(pdf_bytes)
+
+        item.uploaded_scan_path = relative_path
+        item.uploaded_scan_filename = _sanitize_upload_filename(filename)
+        item.status = "PROCESSING_PDF"
+        item.last_error = None
+        item.next_poll_at = None
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="scan_uploaded",
+            payload={
+                "filename": item.uploaded_scan_filename,
+                "stored_path": relative_path,
+                "bytes": len(pdf_bytes),
+            },
+        )
+        return True
+
+
+def remove_uploaded_scan_for_item(request_id: str, item_id: int) -> bool:
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        if not item.uploaded_scan_path:
+            raise ValueError("No uploaded scan is stored for this item.")
+        if item.status == "DELIVERED":
+            raise ValueError("Delivered items cannot remove the uploaded scan.")
+
+        scan_path = Path(settings.work_dir) / item.uploaded_scan_path
+        if scan_path.exists():
+            scan_path.unlink()
+
+        removed_filename = item.uploaded_scan_filename
+        item.uploaded_scan_path = None
+        item.uploaded_scan_filename = None
+        item.last_error = None
+        item.next_poll_at = None
+        if item.zotero_attachment_key:
+            item.status = "PROCESSING_PDF"
+        elif item.zotero_item_key:
+            item.status = "WAITING_FOR_ATTACHMENT"
+            item.next_poll_at = _next_poll_time()
+        else:
+            item.status = "PENDING_METADATA"
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="scan_removed",
+            payload={"filename": removed_filename},
+        )
+        return True
+
+
 def process_next_item() -> bool:
     snapshot = _claim_next_item_snapshot()
     if not snapshot:
@@ -349,6 +445,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             normalization_confidence=item.normalization_confidence,
             zotero_item_key=item.zotero_item_key,
             zotero_attachment_key=item.zotero_attachment_key,
+            uploaded_scan_filename=item.uploaded_scan_filename,
             download_url=item.download_url,
             expires_on=item.expires_on,
             last_error=item.last_error,
@@ -458,6 +555,8 @@ def _claim_next_item_snapshot() -> dict | None:
             "normalized_json": item.normalized_json,
             "zotero_item_key": item.zotero_item_key,
             "zotero_attachment_key": item.zotero_attachment_key,
+            "uploaded_scan_path": item.uploaded_scan_path,
+            "uploaded_scan_filename": item.uploaded_scan_filename,
         }
 
 
@@ -537,16 +636,17 @@ def _process_metadata_stage(snapshot: dict) -> None:
 def _process_zotero_stage(snapshot: dict) -> None:
     bib = _snapshot_to_bib(snapshot)
     zotero = ZoteroClient()
+    has_uploaded_scan = _uploaded_scan_source(snapshot) is not None
 
     if snapshot["zotero_item_key"]:
-        attachment_key = zotero.find_pdf_attachment(snapshot["zotero_item_key"])
+        attachment_key = None if has_uploaded_scan else zotero.find_pdf_attachment(snapshot["zotero_item_key"])
         _update_item(
             snapshot["item_id"],
             citation_text=_format_citation(bib),
             zotero_item_key=snapshot["zotero_item_key"],
             zotero_attachment_key=attachment_key,
-            status="PROCESSING_PDF" if attachment_key else "WAITING_FOR_ATTACHMENT",
-            next_poll_at=None if attachment_key else _next_poll_time(),
+            status="PROCESSING_PDF" if attachment_key or has_uploaded_scan else "WAITING_FOR_ATTACHMENT",
+            next_poll_at=None if attachment_key or has_uploaded_scan else _next_poll_time(),
         )
         return
 
@@ -560,14 +660,14 @@ def _process_zotero_stage(snapshot: dict) -> None:
             existing_item.get("score"),
             existing_item.get("reason"),
         )
-        attachment_key = zotero.find_pdf_attachment(existing_item["key"])
+        attachment_key = None if has_uploaded_scan else zotero.find_pdf_attachment(existing_item["key"])
         _update_item(
             snapshot["item_id"],
             citation_text=_format_citation(bib),
             zotero_item_key=existing_item["key"],
             zotero_attachment_key=attachment_key,
-            status="PROCESSING_PDF" if attachment_key else "WAITING_FOR_ATTACHMENT",
-            next_poll_at=None if attachment_key else _next_poll_time(),
+            status="PROCESSING_PDF" if attachment_key or has_uploaded_scan else "WAITING_FOR_ATTACHMENT",
+            next_poll_at=None if attachment_key or has_uploaded_scan else _next_poll_time(),
         )
         return
 
@@ -576,14 +676,23 @@ def _process_zotero_stage(snapshot: dict) -> None:
         snapshot["item_id"],
         citation_text=_format_citation(bib),
         zotero_item_key=zotero_item_key,
-        status="WAITING_FOR_ATTACHMENT",
-        next_poll_at=_next_poll_time(),
+        status="PROCESSING_PDF" if has_uploaded_scan else "WAITING_FOR_ATTACHMENT",
+        next_poll_at=None if has_uploaded_scan else _next_poll_time(),
     )
 
 
 def _process_attachment_stage(snapshot: dict) -> None:
     if not snapshot["zotero_item_key"]:
         raise RuntimeError("Missing Zotero item key for attachment lookup.")
+
+    uploaded_scan = _uploaded_scan_source(snapshot)
+    if uploaded_scan is not None:
+        _update_item(
+            snapshot["item_id"],
+            status="PROCESSING_PDF",
+            next_poll_at=None,
+        )
+        return
 
     attachment_key = ZoteroClient().find_pdf_attachment(snapshot["zotero_item_key"])
     if not attachment_key:
@@ -603,24 +712,53 @@ def _process_attachment_stage(snapshot: dict) -> None:
 
 
 def _process_delivery_stage(snapshot: dict) -> None:
-    attachment_key = snapshot["zotero_attachment_key"]
-    if not attachment_key and snapshot["zotero_item_key"]:
-        attachment_key = ZoteroClient().find_pdf_attachment(snapshot["zotero_item_key"])
-    if not attachment_key:
-        _update_item(
-            snapshot["item_id"],
-            status="WAITING_FOR_ATTACHMENT",
-            next_poll_at=_next_poll_time(),
-        )
-        return
-
     work_dir = Path(settings.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
-    source_pdf = work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.source.pdf"
-    ZoteroClient().download_attachment(attachment_key, source_pdf)
+    zotero = ZoteroClient()
+    uploaded_scan = _uploaded_scan_source(snapshot)
+    attachment_key = snapshot["zotero_attachment_key"]
+
+    if uploaded_scan is not None:
+        source_pdf = uploaded_scan
+    else:
+        if not attachment_key and snapshot["zotero_item_key"]:
+            attachment_key = zotero.find_pdf_attachment(snapshot["zotero_item_key"])
+        if not attachment_key:
+            _update_item(
+                snapshot["item_id"],
+                status="WAITING_FOR_ATTACHMENT",
+                next_poll_at=_next_poll_time(),
+            )
+            return
+        source_pdf = work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.source.pdf"
+        zotero.download_attachment(attachment_key, source_pdf)
+
     processed_pdf, ocr_result = _maybe_run_ocr(source_pdf)
     if ocr_result is not None:
         _log_ocr_event(snapshot["request_id"], snapshot["item_id"], ocr_result)
+
+    if uploaded_scan is not None and not attachment_key:
+        if snapshot["zotero_item_key"]:
+            attachment_key = zotero.find_pdf_attachment(snapshot["zotero_item_key"])
+        if attachment_key:
+            _log_zotero_attachment_reused_event(
+                snapshot["request_id"],
+                snapshot["item_id"],
+                attachment_key,
+                "existing_parent_attachment",
+            )
+        else:
+            attachment_key = zotero.upload_pdf_attachment(
+                snapshot["zotero_item_key"],
+                processed_pdf,
+                title=f"{snapshot['title']} PDF",
+            )
+            _log_zotero_attachment_upload_event(
+                snapshot["request_id"],
+                snapshot["item_id"],
+                attachment_key,
+                processed_pdf.name,
+            )
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=snapshot["delivery_days"])
     remote_filename = f"{snapshot['request_id']}-{snapshot['item_index']}.pdf"
@@ -799,11 +937,49 @@ def _log_zotero_match_event(
         log_event(
             session,
             request_id=request_id,
-            request_item_id=request_item_id,
-            event_type="zotero_existing_item_matched",
+        request_item_id=request_item_id,
+        event_type="zotero_existing_item_matched",
             payload={
                 "zotero_item_key": zotero_item_key,
                 "score": score,
+                "reason": reason,
+            },
+        )
+
+
+def _log_zotero_attachment_upload_event(
+    request_id: str,
+    request_item_id: int,
+    attachment_key: str,
+    filename: str,
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_attachment_uploaded",
+            payload={
+                "zotero_attachment_key": attachment_key,
+                "filename": filename,
+            },
+        )
+
+
+def _log_zotero_attachment_reused_event(
+    request_id: str,
+    request_item_id: int,
+    attachment_key: str,
+    reason: str,
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_attachment_reused",
+            payload={
+                "zotero_attachment_key": attachment_key,
                 "reason": reason,
             },
         )
@@ -932,6 +1108,25 @@ def _next_poll_time() -> datetime:
 
 def _next_notification_retry_time() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=settings.notification_retry_interval_seconds)
+
+
+def _uploaded_scan_relative_path(request_id: str, item_id: int) -> str:
+    return f"uploads/{request_id}/{item_id}.source.pdf"
+
+
+def _uploaded_scan_source(snapshot: dict) -> Path | None:
+    relative_path = (snapshot.get("uploaded_scan_path") or "").strip()
+    if not relative_path:
+        return None
+    path = Path(settings.work_dir) / relative_path
+    if path.exists():
+        return path
+    raise RuntimeError(f"Uploaded scan is missing on disk: {path}")
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name).strip("._")
+    return cleaned or "scan.pdf"
 
 
 def _maybe_run_ocr(source_pdf: Path) -> tuple[Path, OcrOverlayResult | None]:
