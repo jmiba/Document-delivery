@@ -10,15 +10,23 @@ from app.jobs import (
     approve_metadata_item,
     create_request,
     get_request_summary,
+    ingest_clarification_response,
     list_email_templates,
     list_job_events,
     list_requests,
     remove_uploaded_scan_for_item,
+    request_item_clarification,
     retry_request,
     upload_scan_for_item,
     update_email_template,
 )
-from app.schemas import ApproveMetadataRequest, FormCycleRequest, UpdateEmailTemplateRequest
+from app.schemas import (
+    ApproveMetadataRequest,
+    FormCycleClarificationResponse,
+    FormCycleRequest,
+    RequestClarificationRequest,
+    UpdateEmailTemplateRequest,
+)
 
 
 @asynccontextmanager
@@ -48,6 +56,21 @@ def formcycle_webhook(
     _check_token(x_formcycle_secret, settings.formcycle_webhook_secret, "FormCycle secret")
     request_id, created = create_request(payload)
     return {"request_id": request_id, "created": created}
+
+
+@app.post("/webhooks/formcycle/clarifications")
+def formcycle_clarification_webhook(
+    payload: FormCycleClarificationResponse,
+    x_formcycle_secret: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_formcycle_secret, settings.formcycle_webhook_secret, "FormCycle secret")
+    try:
+        accepted = ingest_clarification_response(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not accepted:
+        raise HTTPException(status_code=404, detail="Clarification target not found")
+    return {"request_id": payload.request_id, "item_id": payload.item_id, "accepted": True}
 
 
 @app.get("/requests")
@@ -90,6 +113,23 @@ def approve_request_item(
     if not approve_metadata_item(request_id, item_id, approval):
         raise HTTPException(status_code=404, detail="Request item not found")
     return {"request_id": request_id, "item_id": item_id, "approved": True}
+
+
+@app.post("/requests/{request_id}/items/{item_id}/clarification-request")
+def request_item_clarification_endpoint(
+    request_id: str,
+    item_id: int,
+    payload: RequestClarificationRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        requested = request_item_clarification(request_id, item_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not requested:
+        raise HTTPException(status_code=404, detail="Request item not found")
+    return {"request_id": request_id, "item_id": item_id, "requested": True}
 
 
 @app.post("/requests/{request_id}/items/{item_id}/scan")

@@ -207,6 +207,16 @@ def approve_item(request_id: str, item_id: int, payload: dict) -> None:
     response.raise_for_status()
 
 
+def request_clarification(request_id: str, item_id: int, operator_message: str) -> None:
+    response = requests.post(
+        f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/clarification-request",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json={"operator_message": operator_message},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
 def upload_scan(request_id: str, item_id: int, uploaded_file) -> None:
     response = requests.post(
         f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/scan",
@@ -367,7 +377,7 @@ def _render_requests_page() -> None:
     metrics[0].metric("Requests", len(requests_data))
     metrics[1].metric("Waiting", status_counts.get("WAITING_FOR_ATTACHMENT", 0))
     metrics[2].metric("Review", status_counts.get("NEEDS_REVIEW", 0))
-    metrics[3].metric("Notify Failed", status_counts.get("NOTIFY_FAILED", 0))
+    metrics[3].metric("Awaiting User", status_counts.get("AWAITING_USER", 0))
     metrics[4].metric("Processed", status_counts.get("PROCESSED", 0))
 
     table_rows = [
@@ -527,6 +537,19 @@ def _render_requests_page() -> None:
                             _approval_payload_from_seed(seed, notes),
                         )
                         st.rerun()
+
+        with st.form(f"clarification-item-{selected_review['id']}"):
+            clarification_message = st.text_area(
+                "Clarification request to the user",
+                value="",
+                help="Explain what is unclear and what the user should correct or complete.",
+                height=140,
+            )
+            clarification_submitted = st.form_submit_button("Request clarification")
+            if clarification_submitted:
+                request_clarification(request["request_id"], selected_review["id"], clarification_message)
+                st.success("Clarification request sent.")
+                st.rerun()
 
         preset_name = st.selectbox(
             "Load review form from",

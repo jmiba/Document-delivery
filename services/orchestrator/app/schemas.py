@@ -70,9 +70,31 @@ class DeliveryNotificationPayload(BaseModel):
     items: list[DeliveryItemPayload]
 
 
+class ClarificationNotificationPayload(BaseModel):
+    request_id: str
+    formcycle_submission_id: str | None = None
+    item_id: int
+    user_email: str
+    user_name: str | None = None
+    language: str | None = None
+    operator_message: str
+    clarification_url: str
+
+
 class ApproveMetadataRequest(BaseModel):
     bibliographic_data: BibliographicData
     review_notes: str | None = None
+
+
+class RequestClarificationRequest(BaseModel):
+    operator_message: str = Field(min_length=1)
+
+
+class FormCycleClarificationResponse(BaseModel):
+    request_id: str
+    item_id: int
+    token: str
+    response_message: str = Field(min_length=1)
 
 
 class ResolutionEvidence(BaseModel):

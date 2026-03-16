@@ -164,6 +164,7 @@ The database has three runtime tables:
 Important item statuses:
 - `PENDING_METADATA`
 - `NEEDS_REVIEW`
+- `AWAITING_USER`
 - `PENDING_ZOTERO`
 - `WAITING_FOR_ATTACHMENT`
 - `PROCESSING_PDF`
@@ -186,6 +187,9 @@ Important item statuses:
 - `CITATION_LOCALE_DE`, `CITATION_LOCALE_EN`, and `CITATION_LOCALE_PL` map the FormCycle form language to the Zotero citation locale.
 - `SMTP_HOST` enables direct email delivery from the app.
 - `SMTP_FROM_EMAIL` is required when SMTP is enabled.
+- `CLARIFICATION_FORM_URL_TEMPLATE` configures the user-facing clarification form link the app sends when an operator requests clarification.
+- `CLARIFICATION_TOKEN_SECRET` signs clarification links so users can only answer for the intended request item.
+- `CLARIFICATION_TOKEN_TTL_HOURS` controls how long a clarification link remains valid.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
 - Email templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page. Available placeholders are `{request_id}`, `{submission_id}`, `{user_email}`, `{user_name}`, `{greeting_name}`, `{item_count}`, `{items_text}`, `{items_html}`, and `{sender_name}`.
@@ -201,3 +205,15 @@ Important item statuses:
 - `OCR_TEXT_LAYER_MIN_CHARS_PER_PAGE`, `OCR_TEXT_LAYER_MIN_PAGE_RATIO`, and `OCR_TEXT_LAYER_MIN_ALPHA_RATIO` tune that heuristic.
 - `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
 - When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.
+
+## Clarification flow
+
+- Operators can request clarification from the Streamlit review screen for items in `NEEDS_REVIEW`.
+- The app sends the clarification email itself via SMTP and marks the item as `AWAITING_USER`.
+- The clarification link should point to a separate FormCycle form that posts back to `POST /webhooks/formcycle/clarifications`.
+- The clarification payload must include:
+  - `request_id`
+  - `item_id`
+  - `token`
+  - `response_message`
+- When the clarification webhook is accepted, the item moves back to `NEEDS_REVIEW` and the user response is appended to the review notes.

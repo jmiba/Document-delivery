@@ -15,8 +15,13 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import session_scope
 from app.models import EmailTemplate
-from app.schemas import BibliographicData, DeliveryNotificationPayload, NormalizationResult
-from app.templates import DEFAULT_EMAIL_TEMPLATES, render_template
+from app.schemas import (
+    BibliographicData,
+    ClarificationNotificationPayload,
+    DeliveryNotificationPayload,
+    NormalizationResult,
+)
+from app.templates import DEFAULT_CLARIFICATION_TEMPLATES, DEFAULT_EMAIL_TEMPLATES, render_template
 
 
 def _clean(value: str | None) -> str:
@@ -653,20 +658,41 @@ class NotificationClient:
         if not self.smtp_host:
             raise RuntimeError("SMTP_HOST must be configured for delivery notifications.")
         rendered_payload = self._with_rendered_citations(payload)
-        self._send_email(rendered_payload)
+        language = _normalize_language(rendered_payload.language)
+        template = self._template_for(language)
+        context = self._template_context(rendered_payload)
+        self._send_email(
+            recipient=rendered_payload.user_email,
+            subject=render_template(template["subject_template"], context),
+            body_text=render_template(template["body_text_template"], context),
+            body_html=render_template(template["body_html_template"], context),
+        )
 
-    def _send_email(self, payload: DeliveryNotificationPayload) -> None:
+    def send_clarification_request(self, payload: ClarificationNotificationPayload) -> None:
+        if not self.smtp_host:
+            raise RuntimeError("SMTP_HOST must be configured for clarification notifications.")
+        language = _normalize_language(payload.language)
+        template = DEFAULT_CLARIFICATION_TEMPLATES.get(language, DEFAULT_CLARIFICATION_TEMPLATES["de"])
+        context = self._clarification_template_context(payload)
+        self._send_email(
+            recipient=payload.user_email,
+            subject=render_template(template["subject_template"], context),
+            body_text=render_template(template["body_text_template"], context),
+            body_html=render_template(template["body_html_template"], context),
+        )
+
+    def _send_email(self, recipient: str, subject: str, body_text: str, body_html: str) -> None:
         if not self.smtp_from_email:
             raise RuntimeError("SMTP_FROM_EMAIL must be configured when SMTP_HOST is set.")
 
         message = EmailMessage()
-        message["Subject"] = self._mail_subject(payload)
+        message["Subject"] = subject
         message["From"] = self._format_from_header()
-        message["To"] = payload.user_email
+        message["To"] = recipient
         if self.smtp_reply_to:
             message["Reply-To"] = self.smtp_reply_to
-        message.set_content(self._mail_text(payload))
-        message.add_alternative(self._mail_html(payload), subtype="html")
+        message.set_content(body_text)
+        message.add_alternative(body_html, subtype="html")
 
         if self.smtp_use_ssl:
             smtp = smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, timeout=30)
@@ -686,21 +712,6 @@ class NotificationClient:
         if self.smtp_from_name:
             return f"{self.smtp_from_name} <{self.smtp_from_email}>"
         return self.smtp_from_email or ""
-
-    def _mail_subject(self, payload: DeliveryNotificationPayload) -> str:
-        language = _normalize_language(payload.language)
-        template = self._template_for(language)
-        return render_template(template["subject_template"], self._template_context(payload))
-
-    def _mail_html(self, payload: DeliveryNotificationPayload) -> str:
-        language = _normalize_language(payload.language)
-        template = self._template_for(language)
-        return render_template(template["body_html_template"], self._template_context(payload))
-
-    def _mail_text(self, payload: DeliveryNotificationPayload) -> str:
-        language = _normalize_language(payload.language)
-        template = self._template_for(language)
-        return render_template(template["body_text_template"], self._template_context(payload))
 
     def _template_for(self, language: str) -> dict[str, str]:
         with session_scope() as session:
@@ -725,6 +736,23 @@ class NotificationClient:
             "item_count": str(len(payload.items)),
             "items_html": self._items_html(payload),
             "items_text": self._items_text(payload),
+            "sender_name": self.smtp_from_name,
+        }
+
+    def _clarification_template_context(self, payload: ClarificationNotificationPayload) -> dict[str, str]:
+        language = _normalize_language(payload.language)
+        greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
+        operator_message = (payload.operator_message or "").strip()
+        return {
+            "request_id": payload.request_id,
+            "submission_id": payload.formcycle_submission_id or "",
+            "user_email": payload.user_email,
+            "user_name": payload.user_name or "",
+            "greeting_name": greeting_name,
+            "item_id": str(payload.item_id),
+            "operator_message": operator_message,
+            "operator_message_html": self._escape_html(operator_message).replace("\n", "<br>"),
+            "clarification_url": payload.clarification_url,
             "sender_name": self.smtp_from_name,
         }
 

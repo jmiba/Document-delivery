@@ -9,6 +9,7 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.clients import NextcloudClient, NotificationClient, ZoteroClient
+from app.clarification import build_clarification_form_url, build_clarification_token, verify_clarification_token
 from app.config import settings
 from app.db import session_scope
 from app.models import DeliveryRequest, JobEvent, RequestItem
@@ -17,11 +18,14 @@ from app.resolution import ResolutionService
 from app.schemas import (
     ApproveMetadataRequest,
     BibliographicData,
+    ClarificationNotificationPayload,
     DeliveryItemPayload,
     DeliveryNotificationPayload,
     EmailTemplateSummary,
+    FormCycleClarificationResponse,
     FormCycleRequest,
     JobEventSummary,
+    RequestClarificationRequest,
     RequestItemSummary,
     RequestSummary,
     UpdateEmailTemplateRequest,
@@ -245,6 +249,10 @@ def retry_request(request_id: str) -> bool:
                 item.status = "PENDING_METADATA"
                 item.last_error = None
                 item.next_poll_at = None
+            elif item.status == "AWAITING_USER":
+                item.status = "NEEDS_REVIEW"
+                item.last_error = None
+                item.next_poll_at = None
             elif item.status == "READY_TO_NOTIFY":
                 item.last_error = None
                 item.next_poll_at = None
@@ -299,6 +307,105 @@ def approve_metadata_item(request_id: str, item_id: int, approval: ApproveMetada
             request_item_id=item.id,
             event_type="metadata_approved",
             payload={"review_notes": approval.review_notes},
+        )
+        return True
+
+
+def request_item_clarification(request_id: str, item_id: int, payload: RequestClarificationRequest) -> bool:
+    operator_message = payload.operator_message.strip()
+    if not operator_message:
+        raise ValueError("A clarification message is required.")
+
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        if item.status not in {"NEEDS_REVIEW", "AWAITING_USER"}:
+            raise ValueError("Clarification can only be requested for items in review.")
+
+        token, expires_at = build_clarification_token(request.request_id, item.id)
+        clarification_url = build_clarification_form_url(request.request_id, item.id, token)
+        notification_payload = ClarificationNotificationPayload(
+            request_id=request.request_id,
+            formcycle_submission_id=request.formcycle_submission_id,
+            item_id=item.id,
+            user_email=request.user_email,
+            user_name=request.user_name,
+            language=request.form_language,
+            operator_message=operator_message,
+            clarification_url=clarification_url,
+        )
+
+    NotificationClient().send_clarification_request(notification_payload)
+
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        item.status = "AWAITING_USER"
+        item.last_error = None
+        item.next_poll_at = None
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="clarification_requested",
+            payload={
+                "expires_at": expires_at.isoformat(),
+                "message": operator_message,
+            },
+        )
+        return True
+
+
+def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bool:
+    if not verify_clarification_token(payload.request_id, payload.item_id, payload.token):
+        raise ValueError("Invalid or expired clarification token.")
+
+    response_message = payload.response_message.strip()
+    if not response_message:
+        raise ValueError("A clarification response is required.")
+
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == payload.request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == payload.item_id), None)
+        if not item:
+            return False
+
+        item.review_notes = _append_clarification_note(item.review_notes, response_message)
+        item.status = "NEEDS_REVIEW"
+        item.last_error = None
+        item.next_poll_at = None
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="clarification_received",
+            payload={"response_message": response_message},
         )
         return True
 
@@ -1014,6 +1121,8 @@ def _sync_request_status(session, request: DeliveryRequest) -> None:
         request.status = "ATTENTION"
     elif request.last_error and statuses <= {"READY_TO_NOTIFY", "DELIVERED"}:
         request.status = "NOTIFY_FAILED"
+    elif "AWAITING_USER" in statuses:
+        request.status = "AWAITING_USER"
     elif "NEEDS_REVIEW" in statuses:
         request.status = "NEEDS_REVIEW"
     elif statuses <= {"WAITING_FOR_ATTACHMENT"}:
@@ -1127,6 +1236,14 @@ def _uploaded_scan_source(snapshot: dict) -> Path | None:
 def _sanitize_upload_filename(filename: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name).strip("._")
     return cleaned or "scan.pdf"
+
+
+def _append_clarification_note(existing: str | None, response_message: str) -> str:
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    note = f"User clarification ({timestamp}):\n{response_message}"
+    if existing and existing.strip():
+        return f"{existing.rstrip()}\n\n{note}"
+    return note
 
 
 def _maybe_run_ocr(source_pdf: Path) -> tuple[Path, OcrOverlayResult | None]:
