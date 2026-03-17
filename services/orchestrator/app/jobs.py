@@ -26,6 +26,7 @@ from app.schemas import (
     FormCycleClarificationResponse,
     FormCycleRequest,
     JobEventSummary,
+    PeriodStatisticsSummary,
     RequestClarificationRequest,
     RequestItemSummary,
     RequestSummary,
@@ -165,6 +166,103 @@ def list_job_events(request_id: str) -> list[JobEventSummary]:
             )
             for event in events
         ]
+
+
+def get_period_statistics(granularity: str = "month", periods: int = 12) -> list[PeriodStatisticsSummary]:
+    normalized_granularity = granularity.strip().lower()
+    if normalized_granularity not in {"month", "year"}:
+        raise ValueError("Unsupported granularity")
+    capped_periods = max(1, min(periods, 60))
+
+    now = datetime.now(timezone.utc)
+    period_starts = _period_starts(now, normalized_granularity, capped_periods)
+    stats_map = {
+        start: {
+            "request_count": 0,
+            "fulfilled_requests": 0,
+            "fulfillment_hours_total": 0.0,
+            "valid_metadata_items": set(),
+            "invalid_metadata_items": set(),
+            "clarification_requests": set(),
+            "reused_items": set(),
+        }
+        for start in period_starts
+    }
+
+    with session_scope() as session:
+        requests = list(
+            session.scalars(
+                select(DeliveryRequest)
+                .where(DeliveryRequest.created_at >= period_starts[0])
+                .options(selectinload(DeliveryRequest.items))
+                .order_by(DeliveryRequest.created_at.asc())
+            )
+        )
+        request_ids = [request.request_id for request in requests]
+        events = []
+        if request_ids:
+            events = list(
+                session.scalars(
+                    select(JobEvent)
+                    .where(JobEvent.request_id.in_(request_ids))
+                    .order_by(JobEvent.created_at.asc())
+                )
+            )
+
+    events_by_request: dict[str, list[JobEvent]] = {}
+    for event in events:
+        events_by_request.setdefault(event.request_id, []).append(event)
+
+    for request in requests:
+        period_start = _bucket_start(request.created_at, normalized_granularity)
+        bucket = stats_map.get(period_start)
+        if bucket is None:
+            continue
+        bucket["request_count"] += 1
+        if request.notification_sent_at:
+            bucket["fulfilled_requests"] += 1
+            bucket["fulfillment_hours_total"] += max(
+                0.0,
+                (request.notification_sent_at - request.created_at).total_seconds() / 3600,
+            )
+
+        for event in events_by_request.get(request.request_id, []):
+            payload = _parse_event_payload(event.payload_json)
+            item_key = event.request_item_id
+            if event.event_type == "resolution_selected" and item_key is not None:
+                if payload.get("auto_accept") is True:
+                    bucket["valid_metadata_items"].add(item_key)
+                elif payload.get("auto_accept") is False:
+                    bucket["invalid_metadata_items"].add(item_key)
+            elif event.event_type == "clarification_requested" and item_key is not None:
+                bucket["clarification_requests"].add(item_key)
+            elif event.event_type == "zotero_existing_item_matched" and item_key is not None:
+                bucket["reused_items"].add(item_key)
+
+    summaries: list[PeriodStatisticsSummary] = []
+    for start in period_starts:
+        bucket = stats_map[start]
+        request_count = bucket["request_count"]
+        fulfilled_requests = bucket["fulfilled_requests"]
+        summaries.append(
+            PeriodStatisticsSummary(
+                period_start=start,
+                period_label=_period_label(start, normalized_granularity),
+                request_count=request_count,
+                fulfilled_requests=fulfilled_requests,
+                fulfillment_rate=(fulfilled_requests / request_count) if request_count else 0.0,
+                avg_fulfillment_hours=(
+                    round(bucket["fulfillment_hours_total"] / fulfilled_requests, 2)
+                    if fulfilled_requests
+                    else None
+                ),
+                valid_metadata_items=len(bucket["valid_metadata_items"]),
+                invalid_metadata_items=len(bucket["invalid_metadata_items"]),
+                clarification_requests=len(bucket["clarification_requests"]),
+                reused_items=len(bucket["reused_items"]),
+            )
+        )
+    return summaries
 
 
 def list_email_templates() -> list[EmailTemplateSummary]:
@@ -1333,6 +1431,45 @@ def _next_poll_time() -> datetime:
 
 def _next_notification_retry_time() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=settings.notification_retry_interval_seconds)
+
+
+def _parse_event_payload(payload_json: str | None) -> dict:
+    if not payload_json:
+        return {}
+    try:
+        parsed = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _bucket_start(value: datetime, granularity: str) -> datetime:
+    normalized = value.astimezone(timezone.utc)
+    if granularity == "year":
+        return normalized.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    return normalized.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _period_starts(now: datetime, granularity: str, periods: int) -> list[datetime]:
+    starts: list[datetime] = []
+    current = _bucket_start(now, granularity)
+    for offset in reversed(range(periods)):
+        if granularity == "year":
+            starts.append(current.replace(year=current.year - offset))
+        else:
+            year = current.year
+            month = current.month - offset
+            while month <= 0:
+                month += 12
+                year -= 1
+            starts.append(current.replace(year=year, month=month))
+    return starts
+
+
+def _period_label(start: datetime, granularity: str) -> str:
+    if granularity == "year":
+        return start.strftime("%Y")
+    return start.strftime("%Y-%m")
 
 
 def _uploaded_scan_relative_path(request_id: str, item_id: int) -> str:

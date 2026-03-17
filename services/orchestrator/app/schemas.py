@@ -174,6 +174,19 @@ class JobEventSummary(BaseModel):
     created_at: datetime
 
 
+class PeriodStatisticsSummary(BaseModel):
+    period_start: datetime
+    period_label: str
+    request_count: int
+    fulfilled_requests: int
+    fulfillment_rate: float
+    avg_fulfillment_hours: float | None
+    valid_metadata_items: int
+    invalid_metadata_items: int
+    clarification_requests: int
+    reused_items: int
+
+
 class EmailTemplateSummary(BaseModel):
     template_kind: str = "delivery"
     language: str

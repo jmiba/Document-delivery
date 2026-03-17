@@ -829,9 +829,9 @@ class NotificationClient:
                 "item_label": "Titel",
                 "download_link": "PDF herunterladen",
                 "download_label": "Download",
-                "valid_until": "Link gueltig bis",
-                "closing_html": "Mit freundlichen Gruessen",
-                "closing_text": "Mit freundlichen Gruessen",
+                "valid_until": "Link gültig bis",
+                "closing_html": "Mit freundlichen Grüßen",
+                "closing_text": "Mit freundlichen Grüßen",
             },
             "en": {
                 "greeting": "Hello",

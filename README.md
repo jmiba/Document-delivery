@@ -194,6 +194,7 @@ Important item statuses:
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
 - Delivery and clarification templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page.
+- The Streamlit `Statistics` page aggregates request cohorts by month or year and shows request volume, fulfillment rate, average fulfillment time, metadata validation outcomes, clarification requests, and Zotero item reuse.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
 - `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
 - `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.

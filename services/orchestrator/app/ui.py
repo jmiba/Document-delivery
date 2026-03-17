@@ -199,6 +199,17 @@ def fetch_events(request_id: str) -> list[dict]:
     return response.json()
 
 
+def fetch_statistics(granularity: str, periods: int) -> list[dict]:
+    response = requests.get(
+        f"{API_BASE_URL}/statistics",
+        headers=_headers(),
+        params={"granularity": granularity, "periods": periods},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def retry_request(request_id: str) -> None:
     response = requests.post(f"{API_BASE_URL}/requests/{request_id}/retry", headers=_headers(), timeout=30)
     response.raise_for_status()
@@ -359,7 +370,7 @@ st.title("Document Delivery Ops")
 st.caption("FastAPI + worker + SQLite pipeline status")
 
 with st.sidebar:
-    page = st.radio("Page", ["Requests", "Email templates"], index=0)
+    page = st.radio("Page", ["Requests", "Statistics", "Email templates"], index=0)
     if _auth_enabled():
         st.divider()
         st.subheader("Account")
@@ -725,6 +736,68 @@ def _render_requests_page() -> None:
         for event in events
     ]
     st.dataframe(event_rows, use_container_width=True, hide_index=True)
+
+
+def _render_statistics_page() -> None:
+    st.subheader("Statistics")
+    control_col1, control_col2 = st.columns(2)
+    with control_col1:
+        granularity = st.selectbox(
+            "Granularity",
+            ["month", "year"],
+            format_func=lambda value: "Monthly" if value == "month" else "Yearly",
+        )
+    with control_col2:
+        periods = st.slider(
+            "Periods",
+            min_value=3,
+            max_value=36 if granularity == "month" else 10,
+            value=12 if granularity == "month" else 5,
+        )
+
+    stats = fetch_statistics(granularity=granularity, periods=periods)
+    if not stats:
+        st.info("No statistics available yet.")
+        return
+
+    total_requests = sum(row["request_count"] for row in stats)
+    total_fulfilled = sum(row["fulfilled_requests"] for row in stats)
+    fulfillment_rate = (total_fulfilled / total_requests) if total_requests else 0.0
+    weighted_duration_hours = sum(
+        (row["avg_fulfillment_hours"] or 0.0) * row["fulfilled_requests"] for row in stats
+    )
+    avg_duration = round(weighted_duration_hours / total_fulfilled, 2) if total_fulfilled else None
+    total_invalid_metadata = sum(row["invalid_metadata_items"] for row in stats)
+    total_clarifications = sum(row["clarification_requests"] for row in stats)
+    total_reused = sum(row["reused_items"] for row in stats)
+
+    metrics = st.columns(5)
+    metrics[0].metric("Requests", total_requests)
+    metrics[1].metric("Fulfillment rate", f"{fulfillment_rate * 100:.1f}%")
+    metrics[2].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
+    metrics[3].metric("Invalid metadata", total_invalid_metadata)
+    metrics[4].metric("Reused items", total_reused)
+
+    st.caption(
+        f"Clarification requests in selected periods: {total_clarifications} | "
+        f"Valid metadata items: {sum(row['valid_metadata_items'] for row in stats)}"
+    )
+
+    table_rows = [
+        {
+            "period": row["period_label"],
+            "requests": row["request_count"],
+            "fulfilled": row["fulfilled_requests"],
+            "fulfillment_rate_pct": round(row["fulfillment_rate"] * 100, 1),
+            "avg_fulfillment_hours": row["avg_fulfillment_hours"],
+            "valid_metadata_items": row["valid_metadata_items"],
+            "invalid_metadata_items": row["invalid_metadata_items"],
+            "clarification_requests": row["clarification_requests"],
+            "reused_items": row["reused_items"],
+        }
+        for row in stats
+    ]
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
 _, right = st.columns([3, 1])
 with right:
     if st.button("Refresh now", use_container_width=True):
@@ -732,5 +805,7 @@ with right:
 
 if page == "Email templates":
     _render_template_editor()
+elif page == "Statistics":
+    _render_statistics_page()
 else:
     _render_requests_page()
