@@ -316,6 +316,13 @@ def _latest_user_clarification(events: list[dict], item_id: int) -> dict | None:
     return None
 
 
+def _query_request_id() -> str | None:
+    value = st.query_params.get("request_id")
+    if isinstance(value, list):
+        return value[0] if value else None
+    return str(value) if value else None
+
+
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
 
 st.markdown(
@@ -433,7 +440,19 @@ def _render_requests_page() -> None:
     st.dataframe(table_rows, use_container_width=True, hide_index=True)
 
     request_ids = [request["request_id"] for request in requests_data]
-    selected_request = st.selectbox("Request", request_ids) if request_ids else None
+    requested_request_id = _query_request_id()
+    initial_index = 0
+    if requested_request_id and requested_request_id in request_ids:
+        initial_index = request_ids.index(requested_request_id)
+    selected_request = (
+        st.selectbox("Request", request_ids, index=initial_index, key="request-select")
+        if request_ids
+        else None
+    )
+    if selected_request:
+        st.query_params["request_id"] = selected_request
+    if requested_request_id and requested_request_id not in request_ids:
+        st.warning(f"Request {requested_request_id} was not found.")
 
     if not selected_request:
         return
