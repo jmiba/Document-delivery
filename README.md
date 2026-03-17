@@ -71,19 +71,43 @@ The operator workflow is code-first:
 
 ## Quick start
 
-1. Create local data folders:
+1. Prerequisites
+
+- Docker Engine
+- Docker Compose v2
+
+2. Create local data folders:
 
 ```bash
 mkdir -p data/scans data/app
 ```
 
-2. Copy env file:
+3. Copy env file:
 
 ```bash
 cp .env.example .env
 ```
 
-3. If you want Streamlit authentication, create a secrets file:
+4. Edit `/Users/jmittelbach/Github/Document delivery/.env`.
+
+At minimum, set real values for:
+- `FORMCYCLE_WEBHOOK_SECRET`
+- `INTERNAL_API_TOKEN`
+- `CLARIFICATION_TOKEN_SECRET`
+- `NEXTCLOUD_BASE_URL`
+- `NEXTCLOUD_USERNAME`
+- `NEXTCLOUD_PASSWORD`
+- `ZOTERO_LIBRARY_ID`
+- `ZOTERO_API_KEY`
+- `SMTP_HOST`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+
+If you use the clarification flow, also set:
+- `CLARIFICATION_FORM_URL_TEMPLATE`
+
+5. If you want Streamlit authentication, create a secrets file:
 
 ```bash
 mkdir -p .streamlit
@@ -92,7 +116,9 @@ cp .streamlit/secrets.example.toml .streamlit/secrets.toml
 
 The Streamlit auth model used here follows `/Users/jmittelbach/Gitlab/ai-service-chatbot`: it is Streamlit's built-in OIDC login flow, not direct SAML. If your institution exposes only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it.
 
-4. Start services:
+If you do not want auth for local development, skip this step. Without a configured `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml`, the Streamlit UI starts without login.
+
+6. Start services:
 
 ```bash
 docker compose up --build
@@ -105,16 +131,30 @@ The orchestrator image installs the OCR system dependencies itself:
 
 So if you run the app with Docker Compose, you do not need to install Poppler or Tesseract on the host machine.
 
-5. Open the operator UI:
+7. Open the operator UI:
 
 ```text
 http://localhost:18501
 ```
 
-6. Health check:
+8. Health check:
 
 ```bash
 curl http://localhost:18000/health
+```
+
+9. Common update workflow
+
+- normal config changes:
+
+```bash
+docker compose up -d --build
+```
+
+- after changing `OCR_TESSERACT_LANG_PACKS`, rebuild is required because the language packs are installed into the image at build time:
+
+```bash
+docker compose up -d --build
 ```
 
 ## FormCycle webhook payload example
@@ -175,6 +215,8 @@ Important item statuses:
 ## Configuration notes
 
 - `DATABASE_URL` defaults to `sqlite:////app/data/delivery.sqlite3`.
+- `SCAN_INPUT_DIR` is the bind-mounted input directory for manually provided scans. The preferred operator flow is now upload through Streamlit, not dropping files here.
+- `WORK_DIR` stores temporary OCR, delivery, and upload working files.
 - `OPENALEX_EMAIL` enables OpenAlex as a normalization source.
 - `CROSSREF_MAILTO` is optional but recommended for polite Crossref API usage.
 - `GBV_SRU_URL` configures the K10plus/GBV SRU endpoint used for book and book-section lookups.
@@ -192,7 +234,9 @@ Important item statuses:
 - `CLARIFICATION_TOKEN_SECRET` signs clarification links so users can only answer for the intended request item.
 - `CLARIFICATION_TOKEN_TTL_HOURS` controls how long a clarification link remains valid.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
+- If you use Exchange or a university SMTP submission server, `SMTP_USE_TLS=true` with `SMTP_PORT=587` is usually the correct setup. Do not enable `SMTP_USE_TLS` and `SMTP_USE_SSL` at the same time.
 - Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
+- Streamlit light/dark colors are defined in `/Users/jmittelbach/Github/Document delivery/.streamlit/config.toml`.
 - Delivery and clarification templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page.
 - The Streamlit `Statistics` page aggregates request cohorts by month or year and shows request volume, fulfillment rate, average fulfillment time, metadata validation outcomes, clarification requests, and Zotero item reuse.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
@@ -213,7 +257,13 @@ Important item statuses:
 - Operators can request clarification from the Streamlit review screen for items in `NEEDS_REVIEW`.
 - The app sends the clarification email itself via SMTP and marks the item as `AWAITING_USER`.
 - The clarification link should point to a separate FormCycle form that posts back to `POST /webhooks/formcycle/clarifications`.
-- The clarification link template can prefill the form with the current item metadata. Supported placeholders are:
+- The clarification link template can prefill the form with the current item metadata. A working minimal template is:
+
+```env
+CLARIFICATION_FORM_URL_TEMPLATE=https://forms.example.edu/form/provide/3104/?request_id={request_id_q}&item_id={item_id_q}&token={token_q}&operator_message={operator_message_q}&item_type={item_type_q}&author={author_q}&workTitle={title_q}&container_title={container_title_q}&issued={issued_q}&volume={volume_q}&issue={issue_q}&page={page_q}
+```
+
+- Supported placeholders are:
   - `{request_id}`, `{request_id_q}`
   - `{item_id}`, `{item_id_q}`
   - `{token}`, `{token_q}`
@@ -236,7 +286,7 @@ Important item statuses:
   - `request_id`
   - `item_id`
   - `token`
-  - `bibliographic_data`
+  - corrected bibliographic fields
   - optional `user_note`
   - optional `operator_message`
-- When the clarification webhook is accepted, the item moves back to `NEEDS_REVIEW`, the corrected bibliographic fields replace the current item values, and the optional user note is appended to the review notes.
+- After clarification is received, the corrected fields are written back to the item and the item is returned to `PENDING_METADATA` so the resolver pipeline validates the clarified data again.
