@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+import altair as alt
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -332,6 +334,53 @@ def _query_request_id() -> str | None:
     if isinstance(value, list):
         return value[0] if value else None
     return str(value) if value else None
+
+
+def _render_bar_chart(rows: list[dict], x_field: str, y_field: str, title: str, color: str) -> None:
+    dataframe = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(dataframe)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2, color=color)
+        .encode(
+            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35)),
+            y=alt.Y(f"{y_field}:Q"),
+            tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")],
+        )
+        .properties(title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_line_chart(rows: list[dict], x_field: str, y_field: str, title: str, color: str) -> None:
+    dataframe = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(dataframe)
+        .mark_line(point=True, strokeWidth=3, color=color)
+        .encode(
+            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35)),
+            y=alt.Y(f"{y_field}:Q"),
+            tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")],
+        )
+        .properties(title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_grouped_bar_chart(rows: list[dict], title: str) -> None:
+    dataframe = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(dataframe)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .encode(
+            x=alt.X("period:N", sort=None, axis=alt.Axis(labelAngle=-35)),
+            xOffset=alt.XOffset("series:N"),
+            y=alt.Y("value:Q"),
+            color=alt.Color("series:N"),
+            tooltip=[alt.Tooltip("period:N"), alt.Tooltip("series:N"), alt.Tooltip("value:Q")],
+        )
+        .properties(title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
@@ -783,6 +832,30 @@ def _render_statistics_page() -> None:
         }
         for row in stats
     ]
+
+    st.subheader("Charts")
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        _render_bar_chart(table_rows, "period", "requests", "Requests per Period", "#b14d31")
+    with chart_col2:
+        _render_line_chart(table_rows, "period", "fulfillment_rate_pct", "Fulfillment Rate (%)", "#4c7a6f")
+
+    metadata_rows = []
+    for row in table_rows:
+        metadata_rows.extend(
+            [
+                {"period": row["period"], "series": "Valid metadata", "value": row["valid_metadata_items"]},
+                {"period": row["period"], "series": "Invalid metadata", "value": row["invalid_metadata_items"]},
+                {"period": row["period"], "series": "Clarifications", "value": row["clarification_requests"]},
+            ]
+        )
+    secondary_chart_col1, secondary_chart_col2 = st.columns(2)
+    with secondary_chart_col1:
+        _render_grouped_bar_chart(metadata_rows, "Metadata Outcomes")
+    with secondary_chart_col2:
+        _render_bar_chart(table_rows, "period", "reused_items", "Reused Zotero Items", "#7b5ea7")
+
+    st.subheader("Table")
     st.dataframe(table_rows, use_container_width=True, hide_index=True)
 _, right = st.columns([3, 1])
 with right:
