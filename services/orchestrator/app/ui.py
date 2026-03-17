@@ -366,8 +366,18 @@ def _render_line_chart(rows: list[dict], x_field: str, y_field: str, title: str,
     st.altair_chart(chart, use_container_width=True)
 
 
-def _render_grouped_bar_chart(rows: list[dict], title: str) -> None:
+def _render_grouped_bar_chart(rows: list[dict], title: str, color_scale: dict[str, str] | None = None) -> None:
     dataframe = pd.DataFrame(rows)
+    color = alt.Color("series:N")
+    if color_scale:
+        color = alt.Color(
+            "series:N",
+            scale=alt.Scale(
+                domain=list(color_scale.keys()),
+                range=list(color_scale.values()),
+            ),
+            legend=alt.Legend(title=None),
+        )
     chart = (
         alt.Chart(dataframe)
         .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
@@ -375,7 +385,7 @@ def _render_grouped_bar_chart(rows: list[dict], title: str) -> None:
             x=alt.X("period:N", sort=None, axis=alt.Axis(labelAngle=-35)),
             xOffset=alt.XOffset("series:N"),
             y=alt.Y("value:Q"),
-            color=alt.Color("series:N"),
+            color=color,
             tooltip=[alt.Tooltip("period:N"), alt.Tooltip("series:N"), alt.Tooltip("value:Q")],
         )
         .properties(title=title)
@@ -851,7 +861,15 @@ def _render_statistics_page() -> None:
         )
     secondary_chart_col1, secondary_chart_col2 = st.columns(2)
     with secondary_chart_col1:
-        _render_grouped_bar_chart(metadata_rows, "Metadata Outcomes")
+        _render_grouped_bar_chart(
+            metadata_rows,
+            "Metadata Outcomes",
+            color_scale={
+                "Valid metadata": "#2E8B57",
+                "Invalid metadata": "#C0392B",
+                "Clarifications": "#D4A017",
+            },
+        )
     with secondary_chart_col2:
         _render_bar_chart(table_rows, "period", "reused_items", "Reused Zotero Items", "#7b5ea7")
 
