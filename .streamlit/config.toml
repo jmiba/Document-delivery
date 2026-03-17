@@ -1,0 +1,27 @@
+[theme]
+base = "light"
+primaryColor = "#b14d31"
+font = "sans serif"
+
+[theme.light]
+backgroundColor = "#efe5d6"
+secondaryBackgroundColor = "#f6efe4"
+textColor = "#11243a"
+
+[theme.dark]
+backgroundColor = "#1f232b"
+secondaryBackgroundColor = "#2a2f39"
+textColor = "#eef2f7"
+
+[theme.sidebar]
+primaryColor = "#b14d31"
+
+[theme.light.sidebar]
+backgroundColor = "#e7dcc9"
+secondaryBackgroundColor = "#efe5d6"
+textColor = "#11243a"
+
+[theme.dark.sidebar]
+backgroundColor = "#181c23"
+secondaryBackgroundColor = "#1f232b"
+textColor = "#eef2f7"

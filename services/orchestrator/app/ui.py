@@ -339,25 +339,11 @@ st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="w
 st.markdown(
     """
     <style>
-    :root {
-      --ink: #11243a;
-      --paper: #f5f0e8;
-      --accent: #b14d31;
-      --accent-soft: #f1d6b8;
-      --line: #d8c9b9;
-    }
-    .stApp {
-      background:
-        radial-gradient(circle at top right, rgba(177, 77, 49, 0.16), transparent 32%),
-        linear-gradient(180deg, #f7f3eb 0%, #efe5d6 100%);
-      color: var(--ink);
-    }
     h1, h2, h3 {
-      color: var(--ink);
       letter-spacing: -0.03em;
     }
     [data-testid="stMetricValue"] {
-      color: var(--accent);
+      letter-spacing: -0.02em;
     }
     </style>
     """,
