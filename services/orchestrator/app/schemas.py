@@ -1,8 +1,71 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _clean_person_name(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _normalize_person_name(value: str) -> str:
+    cleaned = _clean_person_name(value)
+    if not cleaned:
+        return ""
+    if ";" in cleaned:
+        return cleaned
+    if "," in cleaned:
+        parts = [part.strip() for part in cleaned.split(",", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return f"{parts[0]}, {parts[1]}"
+        return cleaned
+    tokens = [token for token in cleaned.split() if token]
+    if len(tokens) >= 2:
+        return f"{tokens[-1]}, {' '.join(tokens[:-1])}"
+    return cleaned
+
+
+def _looks_like_multi_author_display_string(value: str) -> bool:
+    if ";" in value:
+        return False
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if len(parts) < 2:
+        return False
+    # Treat comma-separated display names as multiple authors only when each segment
+    # still looks like a personal name chunk, not "Last, First".
+    if any(len(part.split()) < 2 for part in parts):
+        return False
+    return True
+
+
+def _normalize_people_list(value) -> list[str]:
+    if value is None:
+        return []
+    raw_items = value if isinstance(value, list) else [value]
+    normalized: list[str] = []
+    for raw_item in raw_items:
+        if raw_item is None:
+            continue
+        text = str(raw_item).strip()
+        if not text:
+            continue
+        if _looks_like_multi_author_display_string(text):
+            parts = [part.strip() for part in text.split(",") if part.strip()]
+            normalized.extend(_normalize_person_name(part) for part in parts if _normalize_person_name(part))
+            continue
+        if ";" in text:
+            normalized.extend(
+                _normalize_person_name(part)
+                for part in re.split(r"\s*;\s*", text)
+                if _normalize_person_name(part)
+            )
+            continue
+        normalized_name = _normalize_person_name(text)
+        if normalized_name:
+            normalized.append(normalized_name)
+    return normalized
 
 
 class BibliographicData(BaseModel):
@@ -23,6 +86,11 @@ class BibliographicData(BaseModel):
     isbn: str | None = None
     language: str | None = None
     abstract_note: str | None = None
+
+    @field_validator("creators", "editors", mode="before")
+    @classmethod
+    def normalize_people(cls, value):
+        return _normalize_people_list(value)
 
 
 class FormCycleRequestItem(BaseModel):

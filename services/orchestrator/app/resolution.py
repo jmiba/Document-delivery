@@ -361,6 +361,39 @@ def _allow_author_overwrite(original: BibliographicData, match: ResolutionMatch)
     )
 
 
+def _best_author_enrichment_match(original: BibliographicData, matches: list[ResolutionMatch]) -> ResolutionMatch | None:
+    eligible_sources = {"crossref", "openalex"}
+    candidates = []
+    for match in matches:
+        if (
+            match.source in eligible_sources
+            and match.status == "validated"
+            and match.candidate is not None
+            and match.candidate.creators
+            and (
+                _allow_author_overwrite(original, match)
+                or (
+                    match.score >= 0.8
+                    and match.title_score >= 0.9
+                    and (match.container_score >= 0.75 or match.year_match)
+                )
+            )
+        ):
+            candidates.append(match)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda match: (-match.score, self_or_priority_placeholder(match.source)))
+    return candidates[0]
+
+
+def self_or_priority_placeholder(source: str) -> int:
+    if source == "crossref":
+        return 0
+    if source == "openalex":
+        return 1
+    return 100
+
+
 class CrossrefResolver:
     def __init__(self) -> None:
         self.base = "https://api.crossref.org/works"
@@ -870,11 +903,27 @@ class ResolutionService:
                 overwrite=overwrite,
                 overwrite_authors=overwrite_authors,
             )
+            author_match = _best_author_enrichment_match(bib, matches)
+            if (
+                author_match
+                and author_match.candidate
+                and author_match.candidate.creators
+                and author_match.candidate.creators != normalized_bib.creators
+            ):
+                normalized_bib = _apply_candidate(
+                    normalized_bib,
+                    _make_bib(normalized_bib, creators=author_match.candidate.creators),
+                    overwrite=False,
+                    overwrite_authors=True,
+                )
+                note_suffix = f"authors enriched from {author_match.source}"
+            else:
+                note_suffix = None
             return NormalizationResult(
                 bibliographic_data=normalized_bib,
                 source=best.source,
                 confidence=best.score,
-                notes=self._summarize(matches, best.source),
+                notes=self._summarize(matches, best.source, note_suffix),
                 evidence=evidence,
             )
 
@@ -887,9 +936,11 @@ class ResolutionService:
             evidence=evidence,
         )
 
-    def _summarize(self, matches: list[ResolutionMatch], winner: str | None) -> str:
+    def _summarize(self, matches: list[ResolutionMatch], winner: str | None, suffix: str | None = None) -> str:
         parts = []
         for match in matches:
             prefix = f"{match.source}* " if winner and match.source == winner else f"{match.source} "
             parts.append(f"{prefix}{match.status}: {match.explanation}")
+        if suffix:
+            parts.append(suffix)
         return "; ".join(parts)
