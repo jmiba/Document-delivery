@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
 from app.config import settings
+from app.schemas import BibliographicData
 
 
 def build_clarification_token(request_id: str, item_id: int) -> tuple[str, datetime]:
@@ -40,18 +41,56 @@ def verify_clarification_token(request_id: str, item_id: int, token: str) -> boo
     return expires_at >= int(datetime.now(timezone.utc).timestamp())
 
 
-def build_clarification_form_url(request_id: str, item_id: int, token: str) -> str:
+def build_clarification_form_url(
+    request_id: str,
+    item_id: int,
+    token: str,
+    bibliographic_data: BibliographicData,
+    operator_message: str,
+) -> str:
     template = (settings.clarification_form_url_template or "").strip()
     if not template:
         raise RuntimeError("CLARIFICATION_FORM_URL_TEMPLATE must be configured.")
-    return template.format(
-        request_id=request_id,
-        request_id_q=quote_plus(request_id),
-        item_id=item_id,
-        item_id_q=quote_plus(str(item_id)),
-        token=token,
-        token_q=quote_plus(token),
-    )
+    author = "; ".join(bibliographic_data.creators)
+    return_values = {
+        "request_id": request_id,
+        "request_id_q": quote_plus(request_id),
+        "item_id": item_id,
+        "item_id_q": quote_plus(str(item_id)),
+        "token": token,
+        "token_q": quote_plus(token),
+        "operator_message": operator_message,
+        "operator_message_q": quote_plus(operator_message),
+        "item_type": bibliographic_data.item_type or "",
+        "item_type_q": quote_plus(bibliographic_data.item_type or ""),
+        "author": author,
+        "author_q": quote_plus(author),
+        "title": bibliographic_data.title or "",
+        "title_q": quote_plus(bibliographic_data.title or ""),
+        "container_title": bibliographic_data.publication_title or "",
+        "container_title_q": quote_plus(bibliographic_data.publication_title or ""),
+        "issued": bibliographic_data.year or "",
+        "issued_q": quote_plus(bibliographic_data.year or ""),
+        "volume": bibliographic_data.volume or "",
+        "volume_q": quote_plus(bibliographic_data.volume or ""),
+        "issue": bibliographic_data.issue or "",
+        "issue_q": quote_plus(bibliographic_data.issue or ""),
+        "page": bibliographic_data.pages or "",
+        "page_q": quote_plus(bibliographic_data.pages or ""),
+        "DOI": bibliographic_data.doi or "",
+        "DOI_q": quote_plus(bibliographic_data.doi or ""),
+        "publisher": bibliographic_data.publisher or "",
+        "publisher_q": quote_plus(bibliographic_data.publisher or ""),
+        "place": bibliographic_data.place or "",
+        "place_q": quote_plus(bibliographic_data.place or ""),
+        "series": bibliographic_data.series or "",
+        "series_q": quote_plus(bibliographic_data.series or ""),
+        "edition": bibliographic_data.edition or "",
+        "edition_q": quote_plus(bibliographic_data.edition or ""),
+        "isbn": bibliographic_data.isbn or "",
+        "isbn_q": quote_plus(bibliographic_data.isbn or ""),
+    }
+    return template.format(**return_values)
 
 
 def _sign(encoded_payload: str) -> str:

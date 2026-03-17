@@ -12,6 +12,7 @@ from app.clients import NextcloudClient, NotificationClient, ZoteroClient
 from app.clarification import build_clarification_form_url, build_clarification_token, verify_clarification_token
 from app.config import settings
 from app.db import session_scope
+from app.delivery_pdf import prepend_delivery_cover_page
 from app.models import DeliveryRequest, JobEvent, RequestItem
 from app.ocr import OcrOverlayResult, create_tesseract_overlay_pdf
 from app.resolution import ResolutionService
@@ -181,6 +182,7 @@ def list_email_templates() -> list[EmailTemplateSummary]:
             if template:
                 templates.append(
                     EmailTemplateSummary(
+                        template_kind="delivery",
                         language=template.language,
                         subject_template=template.subject_template,
                         body_text_template=template.body_text_template,
@@ -192,6 +194,7 @@ def list_email_templates() -> list[EmailTemplateSummary]:
                 default_template = DEFAULT_EMAIL_TEMPLATES[language]
                 templates.append(
                     EmailTemplateSummary(
+                        template_kind="delivery",
                         language=language,
                         subject_template=default_template["subject_template"],
                         body_text_template=default_template["body_text_template"],
@@ -219,6 +222,73 @@ def update_email_template(language: str, payload: UpdateEmailTemplateRequest) ->
         template.body_html_template = payload.body_html_template
         session.flush()
         return EmailTemplateSummary(
+            template_kind="delivery",
+            language=template.language,
+            subject_template=template.subject_template,
+            body_text_template=template.body_text_template,
+            body_html_template=template.body_html_template,
+            updated_at=template.updated_at,
+        )
+
+
+def list_clarification_templates() -> list[EmailTemplateSummary]:
+    from app.models import ClarificationTemplate
+    from app.templates import DEFAULT_CLARIFICATION_TEMPLATES
+
+    templates: list[EmailTemplateSummary] = []
+    with session_scope() as session:
+        stored = {
+            template.language: template
+            for template in session.scalars(select(ClarificationTemplate).order_by(ClarificationTemplate.language.asc()))
+        }
+        for language in ("de", "en", "pl"):
+            template = stored.get(language)
+            if template:
+                templates.append(
+                    EmailTemplateSummary(
+                        template_kind="clarification",
+                        language=template.language,
+                        subject_template=template.subject_template,
+                        body_text_template=template.body_text_template,
+                        body_html_template=template.body_html_template,
+                        updated_at=template.updated_at,
+                    )
+                )
+            else:
+                default_template = DEFAULT_CLARIFICATION_TEMPLATES[language]
+                templates.append(
+                    EmailTemplateSummary(
+                        template_kind="clarification",
+                        language=language,
+                        subject_template=default_template["subject_template"],
+                        body_text_template=default_template["body_text_template"],
+                        body_html_template=default_template["body_html_template"],
+                        updated_at=None,
+                    )
+                )
+    return templates
+
+
+def update_clarification_template(language: str, payload: UpdateEmailTemplateRequest) -> EmailTemplateSummary:
+    from app.models import ClarificationTemplate
+
+    normalized_language = language.strip().lower()
+    if normalized_language not in {"de", "en", "pl"}:
+        raise ValueError("Unsupported language")
+
+    with session_scope() as session:
+        template = session.scalar(
+            select(ClarificationTemplate).where(ClarificationTemplate.language == normalized_language)
+        )
+        if template is None:
+            template = ClarificationTemplate(language=normalized_language)
+            session.add(template)
+        template.subject_template = payload.subject_template
+        template.body_text_template = payload.body_text_template
+        template.body_html_template = payload.body_html_template
+        session.flush()
+        return EmailTemplateSummary(
+            template_kind="clarification",
             language=template.language,
             subject_template=template.subject_template,
             body_text_template=template.body_text_template,
@@ -331,7 +401,13 @@ def request_item_clarification(request_id: str, item_id: int, payload: RequestCl
             raise ValueError("Clarification can only be requested for items in review.")
 
         token, expires_at = build_clarification_token(request.request_id, item.id)
-        clarification_url = build_clarification_form_url(request.request_id, item.id, token)
+        clarification_url = build_clarification_form_url(
+            request.request_id,
+            item.id,
+            token,
+            _item_to_bib(item),
+            operator_message,
+        )
         notification_payload = ClarificationNotificationPayload(
             request_id=request.request_id,
             formcycle_submission_id=request.formcycle_submission_id,
@@ -378,9 +454,8 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
     if not verify_clarification_token(payload.request_id, payload.item_id, payload.token):
         raise ValueError("Invalid or expired clarification token.")
 
-    response_message = payload.response_message.strip()
-    if not response_message:
-        raise ValueError("A clarification response is required.")
+    user_note = (payload.user_note or "").strip()
+    corrected_bib = payload.bibliographic_data
 
     with session_scope() as session:
         request = session.scalar(
@@ -394,8 +469,31 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
         if not item:
             return False
 
-        item.review_notes = _append_clarification_note(item.review_notes, response_message)
-        item.status = "NEEDS_REVIEW"
+        item.title = corrected_bib.title
+        item.creators = "; ".join(corrected_bib.creators)
+        item.editors = "; ".join(corrected_bib.editors) if corrected_bib.editors else None
+        item.publication_title = corrected_bib.publication_title
+        item.year = corrected_bib.year
+        item.volume = corrected_bib.volume
+        item.issue = corrected_bib.issue
+        item.pages = corrected_bib.pages
+        item.doi = corrected_bib.doi
+        item.publisher = corrected_bib.publisher
+        item.place = corrected_bib.place
+        item.series = corrected_bib.series
+        item.edition = corrected_bib.edition
+        item.isbn = corrected_bib.isbn
+        item.language = corrected_bib.language
+        item.abstract_note = corrected_bib.abstract_note
+        item.item_type = corrected_bib.item_type
+        item.raw_json = corrected_bib.model_dump_json()
+        item.normalized_json = None
+        item.resolution_json = None
+        item.metadata_source = "user-clarification"
+        item.normalization_confidence = None
+        if user_note:
+            item.review_notes = _append_clarification_note(item.review_notes, user_note)
+        item.status = "PENDING_METADATA"
         item.last_error = None
         item.next_poll_at = None
         request.last_error = None
@@ -405,7 +503,12 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
             request_id=request.request_id,
             request_item_id=item.id,
             event_type="clarification_received",
-            payload={"response_message": response_message},
+            payload={
+                "user_note": user_note or None,
+                "operator_message": payload.operator_message,
+                "bibliographic_data": corrected_bib.model_dump(mode="json"),
+                "requeued_for_resolution": True,
+            },
         )
         return True
 
@@ -639,6 +742,8 @@ def _claim_next_item_snapshot() -> dict | None:
             "formcycle_submission_id": item.request.formcycle_submission_id,
             "user_email": item.request.user_email,
             "user_name": item.request.user_name,
+            "request_created_at": item.request.created_at,
+            "request_language": item.request.form_language,
             "delivery_days": item.request.delivery_days,
             "status": item.status,
             "item_index": item.item_index,
@@ -867,10 +972,21 @@ def _process_delivery_stage(snapshot: dict) -> None:
                 processed_pdf.name,
             )
 
-    expires_at = datetime.now(timezone.utc) + timedelta(days=snapshot["delivery_days"])
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=snapshot["delivery_days"])
     remote_filename = f"{snapshot['request_id']}-{snapshot['item_index']}.pdf"
+    delivery_pdf = prepend_delivery_cover_page(
+        processed_pdf,
+        work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.delivery.pdf",
+        request_id=snapshot["request_id"],
+        item_index=snapshot["item_index"],
+        bibliographic_data=_snapshot_to_bib(snapshot),
+        order_date=snapshot["request_created_at"],
+        delivery_date=now,
+        language=snapshot.get("request_language"),
+    )
     nextcloud = NextcloudClient()
-    remote_path = nextcloud.upload_pdf(processed_pdf, remote_filename)
+    remote_path = nextcloud.upload_pdf(delivery_pdf, remote_filename)
     download_url, expires_on = nextcloud.create_share_link(remote_path, expires_at)
 
     _update_item(

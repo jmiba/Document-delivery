@@ -11,6 +11,7 @@ from app.jobs import (
     create_request,
     get_request_summary,
     ingest_clarification_response,
+    list_clarification_templates,
     list_email_templates,
     list_job_events,
     list_requests,
@@ -18,6 +19,7 @@ from app.jobs import (
     request_item_clarification,
     retry_request,
     upload_scan_for_item,
+    update_clarification_template,
     update_email_template,
 )
 from app.schemas import (
@@ -179,6 +181,12 @@ def get_email_templates(x_internal_token: str | None = Header(default=None)) -> 
     return [template.model_dump(mode="json") for template in list_email_templates()]
 
 
+@app.get("/clarification-templates")
+def get_clarification_templates(x_internal_token: str | None = Header(default=None)) -> list[dict]:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    return [template.model_dump(mode="json") for template in list_clarification_templates()]
+
+
 @app.put("/email-templates/{language}")
 def put_email_template(
     language: str,
@@ -188,6 +196,20 @@ def put_email_template(
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
     try:
         template = update_email_template(language, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return template.model_dump(mode="json")
+
+
+@app.put("/clarification-templates/{language}")
+def put_clarification_template(
+    language: str,
+    payload: UpdateEmailTemplateRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        template = update_clarification_template(language, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return template.model_dump(mode="json")

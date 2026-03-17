@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import session_scope
-from app.models import EmailTemplate
+from app.models import ClarificationTemplate, EmailTemplate
 from app.schemas import (
     BibliographicData,
     ClarificationNotificationPayload,
@@ -672,7 +672,7 @@ class NotificationClient:
         if not self.smtp_host:
             raise RuntimeError("SMTP_HOST must be configured for clarification notifications.")
         language = _normalize_language(payload.language)
-        template = DEFAULT_CLARIFICATION_TEMPLATES.get(language, DEFAULT_CLARIFICATION_TEMPLATES["de"])
+        template = self._clarification_template_for(language)
         context = self._clarification_template_context(payload)
         self._send_email(
             recipient=payload.user_email,
@@ -723,6 +723,17 @@ class NotificationClient:
                 "body_html_template": template.body_html_template,
             }
         return DEFAULT_EMAIL_TEMPLATES.get(language, DEFAULT_EMAIL_TEMPLATES["de"])
+
+    def _clarification_template_for(self, language: str) -> dict[str, str]:
+        with session_scope() as session:
+            template = session.scalar(select(ClarificationTemplate).where(ClarificationTemplate.language == language))
+        if template:
+            return {
+                "subject_template": template.subject_template,
+                "body_text_template": template.body_text_template,
+                "body_html_template": template.body_html_template,
+            }
+        return DEFAULT_CLARIFICATION_TEMPLATES.get(language, DEFAULT_CLARIFICATION_TEMPLATES["de"])
 
     def _template_context(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
         language = _normalize_language(payload.language)

@@ -169,9 +169,16 @@ def fetch_email_templates() -> list[dict]:
     return response.json()
 
 
-def save_email_template(language: str, payload: dict) -> dict:
+def fetch_clarification_templates() -> list[dict]:
+    response = requests.get(f"{API_BASE_URL}/clarification-templates", headers=_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def save_email_template(language: str, payload: dict, template_kind: str = "delivery") -> dict:
+    base_path = "/email-templates" if template_kind == "delivery" else "/clarification-templates"
     response = requests.put(
-        f"{API_BASE_URL}/email-templates/{language}",
+        f"{API_BASE_URL}{base_path}/{language}",
         headers={**_headers(), "Content-Type": "application/json"},
         json=payload,
         timeout=30,
@@ -291,6 +298,24 @@ def _attachment_timeline_rows(request: dict, events: list[dict]) -> list[dict]:
     return rows
 
 
+def _latest_user_clarification(events: list[dict], item_id: int) -> dict | None:
+    for event in events:
+        if event.get("request_item_id") != item_id:
+            continue
+        if event.get("event_type") != "clarification_received":
+            continue
+        payload = _parse_json_object(event.get("payload_json")) or {}
+        user_note = (payload.get("user_note") or "").strip()
+        if not user_note:
+            continue
+        return {
+            "created_at": event.get("created_at"),
+            "user_note": user_note,
+            "operator_message": payload.get("operator_message") or "",
+        }
+    return None
+
+
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
 
 st.markdown(
@@ -342,12 +367,25 @@ with st.sidebar:
 
 def _render_template_editor() -> None:
     st.subheader("Email templates")
-    st.caption("Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {sender_name}")
-    templates = fetch_email_templates()
+    template_kind = st.selectbox(
+        "Template type",
+        ["delivery", "clarification"],
+        format_func=lambda value: "Delivery mail" if value == "delivery" else "Clarification mail",
+    )
+    if template_kind == "delivery":
+        st.caption(
+            "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {sender_name}"
+        )
+        templates = fetch_email_templates()
+    else:
+        st.caption(
+            "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_id}, {operator_message}, {operator_message_html}, {clarification_url}, {sender_name}"
+        )
+        templates = fetch_clarification_templates()
     templates_by_language = {template["language"]: template for template in templates}
     language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: {"de": "German", "en": "English", "pl": "Polish"}[value])
     template = templates_by_language[language]
-    with st.form(f"email-template-{language}"):
+    with st.form(f"email-template-{template_kind}-{language}"):
         subject_template = st.text_input("Subject template", value=template["subject_template"])
         body_text_template = st.text_area("Text template", value=template["body_text_template"], height=300)
         body_html_template = st.text_area("HTML template", value=template["body_html_template"], height=300)
@@ -360,6 +398,7 @@ def _render_template_editor() -> None:
                     "body_text_template": body_text_template,
                     "body_html_template": body_html_template,
                 },
+                template_kind=template_kind,
             )
             st.success("Template saved")
             st.rerun()
@@ -459,6 +498,14 @@ def _render_requests_page() -> None:
         with right:
             st.caption("Proposed normalization")
             st.code(normalized_json or "No normalized payload stored", language="json")
+
+        latest_clarification = _latest_user_clarification(events, selected_review["id"])
+        if latest_clarification:
+            st.caption("Latest user clarification")
+            if latest_clarification["operator_message"]:
+                st.info(latest_clarification["operator_message"])
+            st.success(latest_clarification["user_note"])
+            st.caption(f"Received: {latest_clarification['created_at']}")
 
         review_presets: dict[str, dict] = {"Current item values": _review_seed_from_item(selected_review)}
         original_bib = _parse_json_object(raw_json)

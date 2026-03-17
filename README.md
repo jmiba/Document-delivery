@@ -25,7 +25,7 @@ Code-first starter for a university-library document delivery workflow:
 7. Staff can upload a scan directly in Streamlit for items in `WAITING_FOR_ATTACHMENT`. As a fallback, the worker can still poll Zotero for an existing PDF attachment.
 8. The worker optionally runs OCR through the native Tesseract overlay pass.
 9. If the scan came through the app, the worker uploads the processed PDF back to Zotero as the canonical attachment for later reuse.
-10. The worker uploads the processed PDF to Nextcloud and creates an expiring share link.
+10. The worker prepends a delivery-only cover page with order date, delivery date, and bibliographic data, then uploads that delivered PDF to Nextcloud and creates an expiring share link.
 11. The worker sends the final requester email directly through SMTP when configured.
 
 ## Architecture
@@ -183,6 +183,7 @@ Important item statuses:
 - `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
 - Items in `WAITING_FOR_ATTACHMENT` can now take a PDF upload in the Streamlit UI. The app stores the uploaded scan locally, OCRs it if needed, pushes the processed PDF back to Zotero, and then continues delivery.
 - Uploaded scans are visible in the item table as `App upload: <filename>`. Operators can replace or remove an uploaded scan before delivery if needed.
+- Delivered PDFs include a generated front page with current delivery metadata. The canonical Zotero attachment remains unchanged apart from optional OCR applied during initial app-upload processing.
 - `CITATION_STYLE` controls the CSL style Zotero uses when the app renders bibliography entries for the delivery mail.
 - `CITATION_LOCALE_DE`, `CITATION_LOCALE_EN`, and `CITATION_LOCALE_PL` map the FormCycle form language to the Zotero citation locale.
 - `SMTP_HOST` enables direct email delivery from the app.
@@ -192,7 +193,7 @@ Important item statuses:
 - `CLARIFICATION_TOKEN_TTL_HOURS` controls how long a clarification link remains valid.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
-- Email templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page. Available placeholders are `{request_id}`, `{submission_id}`, `{user_email}`, `{user_name}`, `{greeting_name}`, `{item_count}`, `{items_text}`, `{items_html}`, and `{sender_name}`.
+- Delivery and clarification templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
 - `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
 - `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.
@@ -211,9 +212,30 @@ Important item statuses:
 - Operators can request clarification from the Streamlit review screen for items in `NEEDS_REVIEW`.
 - The app sends the clarification email itself via SMTP and marks the item as `AWAITING_USER`.
 - The clarification link should point to a separate FormCycle form that posts back to `POST /webhooks/formcycle/clarifications`.
+- The clarification link template can prefill the form with the current item metadata. Supported placeholders are:
+  - `{request_id}`, `{request_id_q}`
+  - `{item_id}`, `{item_id_q}`
+  - `{token}`, `{token_q}`
+  - `{operator_message}`, `{operator_message_q}`
+  - `{item_type}`, `{item_type_q}`
+  - `{author}`, `{author_q}`
+  - `{title}`, `{title_q}`
+  - `{container_title}`, `{container_title_q}`
+  - `{issued}`, `{issued_q}`
+  - `{volume}`, `{volume_q}`
+  - `{issue}`, `{issue_q}`
+  - `{page}`, `{page_q}`
+  - `{DOI}`, `{DOI_q}`
+  - `{publisher}`, `{publisher_q}`
+  - `{place}`, `{place_q}`
+  - `{series}`, `{series_q}`
+  - `{edition}`, `{edition_q}`
+  - `{isbn}`, `{isbn_q}`
 - The clarification payload must include:
   - `request_id`
   - `item_id`
   - `token`
-  - `response_message`
-- When the clarification webhook is accepted, the item moves back to `NEEDS_REVIEW` and the user response is appended to the review notes.
+  - `bibliographic_data`
+  - optional `user_note`
+  - optional `operator_message`
+- When the clarification webhook is accepted, the item moves back to `NEEDS_REVIEW`, the corrected bibliographic fields replace the current item values, and the optional user note is appended to the review notes.

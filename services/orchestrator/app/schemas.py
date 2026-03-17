@@ -94,7 +94,9 @@ class FormCycleClarificationResponse(BaseModel):
     request_id: str
     item_id: int
     token: str
-    response_message: str = Field(min_length=1)
+    bibliographic_data: BibliographicData
+    user_note: str | None = None
+    operator_message: str | None = None
 
 
 class ResolutionEvidence(BaseModel):
@@ -173,6 +175,7 @@ class JobEventSummary(BaseModel):
 
 
 class EmailTemplateSummary(BaseModel):
+    template_kind: str = "delivery"
     language: str
     subject_template: str
     body_text_template: str
