@@ -14,14 +14,20 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import session_scope
-from app.models import ClarificationTemplate, EmailTemplate
+from app.models import ClarificationTemplate, EmailTemplate, RejectionTemplate
 from app.schemas import (
     BibliographicData,
     ClarificationNotificationPayload,
     DeliveryNotificationPayload,
     NormalizationResult,
+    RejectionNotificationPayload,
 )
-from app.templates import DEFAULT_CLARIFICATION_TEMPLATES, DEFAULT_EMAIL_TEMPLATES, render_template
+from app.templates import (
+    DEFAULT_CLARIFICATION_TEMPLATES,
+    DEFAULT_EMAIL_TEMPLATES,
+    DEFAULT_REJECTION_TEMPLATES,
+    render_template,
+)
 
 
 def _clean(value: str | None) -> str:
@@ -681,6 +687,19 @@ class NotificationClient:
             body_html=render_template(template["body_html_template"], context),
         )
 
+    def send_rejection(self, payload: RejectionNotificationPayload) -> None:
+        if not self.smtp_host:
+            raise RuntimeError("SMTP_HOST must be configured for rejection notifications.")
+        language = _normalize_language(payload.language)
+        template = self._rejection_template_for(language)
+        context = self._rejection_template_context(payload)
+        self._send_email(
+            recipient=payload.user_email,
+            subject=render_template(template["subject_template"], context),
+            body_text=render_template(template["body_text_template"], context),
+            body_html=render_template(template["body_html_template"], context),
+        )
+
     def _send_email(self, recipient: str, subject: str, body_text: str, body_html: str) -> None:
         if not self.smtp_from_email:
             raise RuntimeError("SMTP_FROM_EMAIL must be configured when SMTP_HOST is set.")
@@ -735,6 +754,17 @@ class NotificationClient:
             }
         return DEFAULT_CLARIFICATION_TEMPLATES.get(language, DEFAULT_CLARIFICATION_TEMPLATES["de"])
 
+    def _rejection_template_for(self, language: str) -> dict[str, str]:
+        with session_scope() as session:
+            template = session.scalar(select(RejectionTemplate).where(RejectionTemplate.language == language))
+        if template:
+            return {
+                "subject_template": template.subject_template,
+                "body_text_template": template.body_text_template,
+                "body_html_template": template.body_html_template,
+            }
+        return DEFAULT_REJECTION_TEMPLATES.get(language, DEFAULT_REJECTION_TEMPLATES["de"])
+
     def _template_context(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
         language = _normalize_language(payload.language)
         greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
@@ -764,6 +794,24 @@ class NotificationClient:
             "operator_message": operator_message,
             "operator_message_html": self._escape_html(operator_message).replace("\n", "<br>"),
             "clarification_url": payload.clarification_url,
+            "sender_name": self.smtp_from_name,
+        }
+
+    def _rejection_template_context(self, payload: RejectionNotificationPayload) -> dict[str, str]:
+        language = _normalize_language(payload.language)
+        greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
+        return {
+            "request_id": payload.request_id,
+            "submission_id": payload.formcycle_submission_id or "",
+            "user_email": payload.user_email,
+            "user_name": payload.user_name or "",
+            "greeting_name": greeting_name,
+            "item_id": str(payload.item_id),
+            "item_title": payload.item_title,
+            "item_description": payload.item_description,
+            "item_description_html": self._escape_html(payload.item_description).replace("\n", "<br>"),
+            "rejection_reason": payload.rejection_reason,
+            "rejection_reason_html": self._escape_html(payload.rejection_reason).replace("\n", "<br>"),
             "sender_name": self.smtp_from_name,
         }
 

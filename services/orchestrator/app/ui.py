@@ -177,8 +177,19 @@ def fetch_clarification_templates() -> list[dict]:
     return response.json()
 
 
+def fetch_rejection_templates() -> list[dict]:
+    response = requests.get(f"{API_BASE_URL}/rejection-templates", headers=_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
 def save_email_template(language: str, payload: dict, template_kind: str = "delivery") -> dict:
-    base_path = "/email-templates" if template_kind == "delivery" else "/clarification-templates"
+    if template_kind == "delivery":
+        base_path = "/email-templates"
+    elif template_kind == "clarification":
+        base_path = "/clarification-templates"
+    else:
+        base_path = "/rejection-templates"
     response = requests.put(
         f"{API_BASE_URL}{base_path}/{language}",
         headers={**_headers(), "Content-Type": "application/json"},
@@ -232,6 +243,16 @@ def request_clarification(request_id: str, item_id: int, operator_message: str) 
         f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/clarification-request",
         headers={**_headers(), "Content-Type": "application/json"},
         json={"operator_message": operator_message},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def reject_item(request_id: str, item_id: int, rejection_reason: str) -> None:
+    response = requests.post(
+        f"{API_BASE_URL}/requests/{request_id}/items/{item_id}/reject",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json={"rejection_reason": rejection_reason},
         timeout=30,
     )
     response.raise_for_status()
@@ -432,19 +453,28 @@ def _render_template_editor() -> None:
     st.subheader("Email templates")
     template_kind = st.selectbox(
         "Template type",
-        ["delivery", "clarification"],
-        format_func=lambda value: "Delivery mail" if value == "delivery" else "Clarification mail",
+        ["delivery", "clarification", "rejection"],
+        format_func=lambda value: {
+            "delivery": "Delivery mail",
+            "clarification": "Clarification mail",
+            "rejection": "Rejection mail",
+        }[value],
     )
     if template_kind == "delivery":
         st.caption(
             "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {sender_name}"
         )
         templates = fetch_email_templates()
-    else:
+    elif template_kind == "clarification":
         st.caption(
             "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_id}, {operator_message}, {operator_message_html}, {clarification_url}, {sender_name}"
         )
         templates = fetch_clarification_templates()
+    else:
+        st.caption(
+            "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_id}, {item_title}, {item_description}, {item_description_html}, {rejection_reason}, {rejection_reason_html}, {sender_name}"
+        )
+        templates = fetch_rejection_templates()
     templates_by_language = {template["language"]: template for template in templates}
     language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: {"de": "German", "en": "English", "pl": "Polish"}[value])
     template = templates_by_language[language]
@@ -555,6 +585,30 @@ def _render_requests_page() -> None:
         for item in request["items"]
     ]
     st.dataframe(item_rows, use_container_width=True, hide_index=True)
+
+    rejectable_items = [
+        item for item in request["items"] if item["status"] not in {"DELIVERED", "REJECTED"}
+    ]
+    if rejectable_items:
+        st.subheader("Reject item")
+        rejected_item = st.selectbox(
+            "Item to reject",
+            rejectable_items,
+            format_func=lambda item: f"#{item['item_index']} {item['title']} ({item['status']})",
+            key=f"reject-item-{request['request_id']}",
+        )
+        with st.form(f"reject-item-form-{rejected_item['id']}"):
+            rejection_reason = st.text_area(
+                "Reason for rejection",
+                value="",
+                help="This reason is sent to the requester in the rejection mail.",
+                height=120,
+            )
+            reject_submitted = st.form_submit_button("Reject item")
+            if reject_submitted:
+                reject_item(request["request_id"], rejected_item["id"], rejection_reason)
+                st.success("Rejection mail sent and item rejected.")
+                st.rerun()
 
     review_candidates = [item for item in request["items"] if item["status"] == "NEEDS_REVIEW"]
     if review_candidates:

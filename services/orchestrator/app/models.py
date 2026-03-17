@@ -116,3 +116,15 @@ class ClarificationTemplate(Base):
     body_html_template: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class RejectionTemplate(Base):
+    __tablename__ = "rejection_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    language: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    subject_template: Mapped[str] = mapped_column(Text)
+    body_text_template: Mapped[str] = mapped_column(Text)
+    body_html_template: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

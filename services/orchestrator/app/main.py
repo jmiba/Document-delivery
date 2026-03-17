@@ -14,19 +14,23 @@ from app.jobs import (
     get_period_statistics,
     list_clarification_templates,
     list_email_templates,
+    list_rejection_templates,
     list_job_events,
     list_requests,
     remove_uploaded_scan_for_item,
+    reject_request_item,
     request_item_clarification,
     retry_request,
     upload_scan_for_item,
     update_clarification_template,
     update_email_template,
+    update_rejection_template,
 )
 from app.schemas import (
     ApproveMetadataRequest,
     FormCycleClarificationResponse,
     FormCycleRequest,
+    RejectRequestItemRequest,
     RequestClarificationRequest,
     UpdateEmailTemplateRequest,
 )
@@ -148,6 +152,23 @@ def request_item_clarification_endpoint(
     return {"request_id": request_id, "item_id": item_id, "requested": True}
 
 
+@app.post("/requests/{request_id}/items/{item_id}/reject")
+def reject_request_item_endpoint(
+    request_id: str,
+    item_id: int,
+    payload: RejectRequestItemRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        rejected = reject_request_item(request_id, item_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not rejected:
+        raise HTTPException(status_code=404, detail="Request item not found")
+    return {"request_id": request_id, "item_id": item_id, "rejected": True}
+
+
 @app.post("/requests/{request_id}/items/{item_id}/scan")
 async def upload_request_item_scan(
     request_id: str,
@@ -201,6 +222,12 @@ def get_clarification_templates(x_internal_token: str | None = Header(default=No
     return [template.model_dump(mode="json") for template in list_clarification_templates()]
 
 
+@app.get("/rejection-templates")
+def get_rejection_templates(x_internal_token: str | None = Header(default=None)) -> list[dict]:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    return [template.model_dump(mode="json") for template in list_rejection_templates()]
+
+
 @app.put("/email-templates/{language}")
 def put_email_template(
     language: str,
@@ -224,6 +251,20 @@ def put_clarification_template(
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
     try:
         template = update_clarification_template(language, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return template.model_dump(mode="json")
+
+
+@app.put("/rejection-templates/{language}")
+def put_rejection_template(
+    language: str,
+    payload: UpdateEmailTemplateRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        template = update_rejection_template(language, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return template.model_dump(mode="json")

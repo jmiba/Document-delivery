@@ -149,6 +149,18 @@ class ClarificationNotificationPayload(BaseModel):
     clarification_url: str
 
 
+class RejectionNotificationPayload(BaseModel):
+    request_id: str
+    formcycle_submission_id: str | None = None
+    item_id: int
+    user_email: str
+    user_name: str | None = None
+    language: str | None = None
+    item_title: str
+    item_description: str
+    rejection_reason: str
+
+
 class ApproveMetadataRequest(BaseModel):
     bibliographic_data: BibliographicData
     review_notes: str | None = None
@@ -156,6 +168,10 @@ class ApproveMetadataRequest(BaseModel):
 
 class RequestClarificationRequest(BaseModel):
     operator_message: str = Field(min_length=1)
+
+
+class RejectRequestItemRequest(BaseModel):
+    rejection_reason: str = Field(min_length=1)
 
 
 class FormCycleClarificationResponse(BaseModel):

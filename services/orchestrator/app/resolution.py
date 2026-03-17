@@ -430,7 +430,8 @@ class CrossrefResolver:
 
     def _match_item(self, bib: BibliographicData, item: dict, *, trust_ref_doi: bool) -> ResolutionMatch:
         if not _source_type_matches(bib.item_type, item.get("type")):
-            return ResolutionMatch("crossref", "invalid", 0.0, f"type mismatch ({item.get('type')})")
+            status = "invalid" if trust_ref_doi else "not_found"
+            return ResolutionMatch("crossref", status, 0.0, f"type mismatch ({item.get('type')})")
         title = item.get("title", [""])
         resolved_title = title[0] if isinstance(title, list) and title else title or ""
         container = item.get("container-title", [""])
@@ -576,7 +577,8 @@ class OpenAlexResolver:
     def _match_work(self, bib: BibliographicData, work: dict, *, trust_ref_doi: bool) -> ResolutionMatch:
         source_type = work.get("type_crossref") or work.get("type")
         if not _source_type_matches(bib.item_type, source_type):
-            return ResolutionMatch("openalex", "invalid", 0.0, f"type mismatch ({source_type})")
+            status = "invalid" if trust_ref_doi else "not_found"
+            return ResolutionMatch("openalex", status, 0.0, f"type mismatch ({source_type})")
         source = ((work.get("primary_location") or {}).get("source") or {})
         container_title = source.get("display_name") or ""
         title = work.get("display_name") or ""

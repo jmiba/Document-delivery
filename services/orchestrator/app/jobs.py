@@ -27,6 +27,8 @@ from app.schemas import (
     FormCycleRequest,
     JobEventSummary,
     PeriodStatisticsSummary,
+    RejectRequestItemRequest,
+    RejectionNotificationPayload,
     RequestClarificationRequest,
     RequestItemSummary,
     RequestSummary,
@@ -367,6 +369,44 @@ def list_clarification_templates() -> list[EmailTemplateSummary]:
     return templates
 
 
+def list_rejection_templates() -> list[EmailTemplateSummary]:
+    from app.models import RejectionTemplate
+    from app.templates import DEFAULT_REJECTION_TEMPLATES
+
+    templates: list[EmailTemplateSummary] = []
+    with session_scope() as session:
+        stored = {
+            template.language: template
+            for template in session.scalars(select(RejectionTemplate).order_by(RejectionTemplate.language.asc()))
+        }
+        for language in ("de", "en", "pl"):
+            template = stored.get(language)
+            if template:
+                templates.append(
+                    EmailTemplateSummary(
+                        template_kind="rejection",
+                        language=template.language,
+                        subject_template=template.subject_template,
+                        body_text_template=template.body_text_template,
+                        body_html_template=template.body_html_template,
+                        updated_at=template.updated_at,
+                    )
+                )
+            else:
+                default_template = DEFAULT_REJECTION_TEMPLATES[language]
+                templates.append(
+                    EmailTemplateSummary(
+                        template_kind="rejection",
+                        language=language,
+                        subject_template=default_template["subject_template"],
+                        body_text_template=default_template["body_text_template"],
+                        body_html_template=default_template["body_html_template"],
+                        updated_at=None,
+                    )
+                )
+    return templates
+
+
 def update_clarification_template(language: str, payload: UpdateEmailTemplateRequest) -> EmailTemplateSummary:
     from app.models import ClarificationTemplate
 
@@ -387,6 +427,32 @@ def update_clarification_template(language: str, payload: UpdateEmailTemplateReq
         session.flush()
         return EmailTemplateSummary(
             template_kind="clarification",
+            language=template.language,
+            subject_template=template.subject_template,
+            body_text_template=template.body_text_template,
+            body_html_template=template.body_html_template,
+            updated_at=template.updated_at,
+        )
+
+
+def update_rejection_template(language: str, payload: UpdateEmailTemplateRequest) -> EmailTemplateSummary:
+    from app.models import RejectionTemplate
+
+    normalized_language = language.strip().lower()
+    if normalized_language not in {"de", "en", "pl"}:
+        raise ValueError("Unsupported language")
+
+    with session_scope() as session:
+        template = session.scalar(select(RejectionTemplate).where(RejectionTemplate.language == normalized_language))
+        if template is None:
+            template = RejectionTemplate(language=normalized_language)
+            session.add(template)
+        template.subject_template = payload.subject_template
+        template.body_text_template = payload.body_text_template
+        template.body_html_template = payload.body_html_template
+        session.flush()
+        return EmailTemplateSummary(
+            template_kind="rejection",
             language=template.language,
             subject_template=template.subject_template,
             body_text_template=template.body_text_template,
@@ -544,6 +610,66 @@ def request_item_clarification(request_id: str, item_id: int, payload: RequestCl
                 "expires_at": expires_at.isoformat(),
                 "message": operator_message,
             },
+        )
+        return True
+
+
+def reject_request_item(request_id: str, item_id: int, payload: RejectRequestItemRequest) -> bool:
+    rejection_reason = payload.rejection_reason.strip()
+    if not rejection_reason:
+        raise ValueError("A rejection reason is required.")
+
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        if item.status in {"DELIVERED", "REJECTED"}:
+            raise ValueError("Item is already finalized.")
+
+        notification_payload = RejectionNotificationPayload(
+            request_id=request.request_id,
+            formcycle_submission_id=request.formcycle_submission_id,
+            item_id=item.id,
+            user_email=request.user_email,
+            user_name=request.user_name,
+            language=request.form_language,
+            item_title=item.title,
+            item_description=_format_citation(_item_to_bib(item)),
+            rejection_reason=rejection_reason,
+        )
+
+    NotificationClient().send_rejection(notification_payload)
+
+    with session_scope() as session:
+        request = session.scalar(
+            select(DeliveryRequest)
+            .where(DeliveryRequest.request_id == request_id)
+            .options(selectinload(DeliveryRequest.items))
+        )
+        if not request:
+            return False
+        item = next((candidate for candidate in request.items if candidate.id == item_id), None)
+        if not item:
+            return False
+        item.status = "REJECTED"
+        item.last_error = None
+        item.next_poll_at = None
+        item.review_notes = _append_rejection_note(item.review_notes, rejection_reason)
+        request.last_error = None
+        _sync_request_status(session, request)
+        log_event(
+            session,
+            request_id=request.request_id,
+            request_item_id=item.id,
+            event_type="item_rejected",
+            payload={"reason": rejection_reason},
         )
         return True
 
@@ -1147,7 +1273,12 @@ def _maybe_finalize_request(request_id: str) -> None:
         if not request.items:
             return
 
-        if any(item.status not in {"READY_TO_NOTIFY", "DELIVERED"} for item in request.items):
+        if any(item.status not in {"READY_TO_NOTIFY", "DELIVERED", "REJECTED"} for item in request.items):
+            return
+
+        deliverable_items = [item for item in request.items if item.status in {"READY_TO_NOTIFY", "DELIVERED"}]
+        if not deliverable_items:
+            request.status = "REJECTED"
             return
 
         payload = DeliveryNotificationPayload(
@@ -1165,7 +1296,7 @@ def _maybe_finalize_request(request_id: str) -> None:
                     expires_on=item.expires_on or "",
                     zotero_item_key=item.zotero_item_key or "",
                 )
-                for item in request.items
+                for item in deliverable_items
             ],
         )
 
@@ -1179,17 +1310,23 @@ def _maybe_finalize_request(request_id: str) -> None:
         )
         if not request:
             return
+        delivered_count = 0
+        rejected_count = 0
         for item in request.items:
-            item.status = "DELIVERED"
+            if item.status == "READY_TO_NOTIFY":
+                item.status = "DELIVERED"
+                delivered_count += 1
+            elif item.status == "REJECTED":
+                rejected_count += 1
         request.notification_sent_at = datetime.now(timezone.utc)
-        request.status = "PROCESSED"
         request.last_error = None
+        _sync_request_status(session, request)
         log_event(
             session,
             request_id=request.request_id,
             request_item_id=None,
             event_type="request_notified",
-            payload={"item_count": len(request.items)},
+            payload={"item_count": delivered_count, "rejected_item_count": rejected_count},
         )
 
 
@@ -1329,7 +1466,11 @@ def _sync_request_status(session, request: DeliveryRequest) -> None:
     statuses = {item.status for item in request.items}
     if not statuses:
         request.status = "RECEIVED"
+    elif statuses == {"REJECTED"}:
+        request.status = "REJECTED"
     elif statuses == {"DELIVERED"} and request.notification_sent_at:
+        request.status = "PROCESSED"
+    elif statuses <= {"DELIVERED", "REJECTED"} and request.notification_sent_at:
         request.status = "PROCESSED"
     elif "FAILED" in statuses:
         request.status = "ATTENTION"
@@ -1345,6 +1486,12 @@ def _sync_request_status(session, request: DeliveryRequest) -> None:
         request.status = "READY_TO_NOTIFY"
     else:
         request.status = "IN_PROGRESS"
+
+
+def _append_rejection_note(existing: str | None, reason: str) -> str:
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    block = f"Item rejected ({timestamp}):\n{reason}"
+    return f"{existing.rstrip()}\n\n{block}" if existing and existing.strip() else block
 
 
 def _snapshot_to_bib(snapshot: dict) -> BibliographicData:
