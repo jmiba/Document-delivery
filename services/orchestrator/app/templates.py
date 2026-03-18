@@ -15,6 +15,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Guten Tag {greeting_name},\n\n"
             "die angeforderte Dokumentlieferung ist bereit.\n\n"
             "{items_text}\n\n"
+            "{bibtex_note_text}\n\n"
             "Mit freundlichen Grüßen\n"
             "{sender_name}"
         ),
@@ -22,6 +23,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Guten Tag {greeting_name},</p>"
             "<p>die angeforderte Dokumentlieferung ist bereit.</p>"
             "{items_html}"
+            "<p>{bibtex_note_html}</p>"
             "<p>Mit freundlichen Grüßen<br>{sender_name}</p>"
         ),
     },
@@ -31,6 +33,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Hello {greeting_name},\n\n"
             "your requested document delivery is ready.\n\n"
             "{items_text}\n\n"
+            "{bibtex_note_text}\n\n"
             "Kind regards\n"
             "{sender_name}"
         ),
@@ -38,6 +41,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Hello {greeting_name},</p>"
             "<p>your requested document delivery is ready.</p>"
             "{items_html}"
+            "<p>{bibtex_note_html}</p>"
             "<p>Kind regards<br>{sender_name}</p>"
         ),
     },
@@ -47,6 +51,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "Dzien dobry {greeting_name},\n\n"
             "zamowione materialy sa gotowe do pobrania.\n\n"
             "{items_text}\n\n"
+            "{bibtex_note_text}\n\n"
             "Z powazaniem\n"
             "{sender_name}"
         ),
@@ -54,6 +59,7 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
             "<p>Dzien dobry {greeting_name},</p>"
             "<p>zamowione materialy sa gotowe do pobrania.</p>"
             "{items_html}"
+            "<p>{bibtex_note_html}</p>"
             "<p>Z powazaniem<br>{sender_name}</p>"
         ),
     },

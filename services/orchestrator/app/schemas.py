@@ -5,6 +5,8 @@ import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.bibtex import parse_bibtex_entry
+
 
 def _clean_person_name(value: str | None) -> str:
     return (value or "").strip()
@@ -95,7 +97,17 @@ class BibliographicData(BaseModel):
 
 class FormCycleRequestItem(BaseModel):
     item_index: int | None = None
-    bibliographic_data: BibliographicData
+    bibliographic_data: BibliographicData | None = None
+    bibtex: str | None = None
+
+    @model_validator(mode="after")
+    def ensure_bibliographic_data(self) -> "FormCycleRequestItem":
+        if (self.bibtex or "").strip():
+            self.bibliographic_data = BibliographicData(**parse_bibtex_entry(self.bibtex or ""))
+            return self
+        if self.bibliographic_data is None:
+            raise ValueError("Either bibliographic_data or bibtex is required.")
+        return self
 
 
 class FormCycleRequest(BaseModel):
@@ -107,11 +119,18 @@ class FormCycleRequest(BaseModel):
     delivery_days: int | None = None
     items: list[FormCycleRequestItem] = Field(default_factory=list)
     bibliographic_data: BibliographicData | None = None
+    bibtex: str | None = None
 
     @model_validator(mode="after")
     def ensure_items(self) -> "FormCycleRequest":
-        if not self.items and self.bibliographic_data:
-            self.items = [FormCycleRequestItem(item_index=0, bibliographic_data=self.bibliographic_data)]
+        if not self.items and (self.bibliographic_data or (self.bibtex or "").strip()):
+            self.items = [
+                FormCycleRequestItem(
+                    item_index=0,
+                    bibliographic_data=self.bibliographic_data,
+                    bibtex=self.bibtex,
+                )
+            ]
         if not self.items:
             raise ValueError("At least one bibliographic item is required.")
         for index, item in enumerate(self.items):
@@ -126,6 +145,7 @@ class DeliveryItemPayload(BaseModel):
     download_url: str
     expires_on: str
     zotero_item_key: str
+    bibliographic_data: BibliographicData
 
 
 class DeliveryNotificationPayload(BaseModel):
@@ -136,6 +156,7 @@ class DeliveryNotificationPayload(BaseModel):
     language: str | None = None
     status: str
     items: list[DeliveryItemPayload]
+    bibtex_filename: str | None = None
 
 
 class ClarificationNotificationPayload(BaseModel):

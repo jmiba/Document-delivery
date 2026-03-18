@@ -25,20 +25,27 @@ def build_clarification_token(request_id: str, item_id: int) -> tuple[str, datet
 
 
 def verify_clarification_token(request_id: str, item_id: int, token: str) -> bool:
-    try:
-        encoded_payload, signature = token.split(".", 1)
-    except ValueError:
-        return False
-    if not hmac.compare_digest(signature, _sign(encoded_payload)):
-        return False
-    try:
-        payload = json.loads(_decode(encoded_payload))
-    except Exception:
+    payload = parse_clarification_token(token)
+    if not payload:
         return False
     if payload.get("request_id") != request_id or int(payload.get("item_id", -1)) != item_id:
         return False
     expires_at = int(payload.get("exp", 0))
     return expires_at >= int(datetime.now(timezone.utc).timestamp())
+
+
+def parse_clarification_token(token: str) -> dict | None:
+    try:
+        encoded_payload, signature = token.split(".", 1)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(signature, _sign(encoded_payload)):
+        return None
+    try:
+        payload = json.loads(_decode(encoded_payload))
+    except Exception:
+        return None
+    return payload
 
 
 def build_clarification_form_url(

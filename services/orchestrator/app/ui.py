@@ -87,6 +87,61 @@ def _creators_to_string(value) -> str:
     return str(value or "").strip()
 
 
+def _human_readable_bib_rows(payload: dict) -> list[dict]:
+    seed = _review_seed_from_bib(payload)
+    labels = [
+        ("item_type", "Item type"),
+        ("title", "Title"),
+        ("creators", "Creators"),
+        ("editors", "Editors"),
+        ("publication_title", "Publication"),
+        ("year", "Year"),
+        ("volume", "Volume"),
+        ("issue", "Issue"),
+        ("pages", "Pages"),
+        ("doi", "DOI"),
+        ("publisher", "Publisher"),
+        ("place", "Place"),
+        ("series", "Series"),
+        ("edition", "Edition"),
+        ("isbn", "ISBN"),
+    ]
+    return [
+        {"Field": label, "Value": seed.get(key) or ""}
+        for key, label in labels
+        if seed.get(key) not in (None, "")
+    ]
+
+
+def _render_bib_payload(label: str, payload: dict | None, key: str) -> None:
+    st.caption(label)
+    if not payload:
+        st.write("No payload stored")
+        return
+    show_raw = st.toggle("Show raw JSON", value=False, key=key)
+    if show_raw:
+        st.code(json.dumps(payload, ensure_ascii=False, indent=2), language="json")
+        return
+    rows = _human_readable_bib_rows(payload)
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _render_key_value_payload(label: str, payload: dict, key: str) -> None:
+    st.caption(label)
+    show_raw = st.toggle("Show raw JSON", value=False, key=key)
+    if show_raw:
+        st.code(json.dumps(payload, ensure_ascii=False, indent=2), language="json")
+        return
+    rows = [{"Field": field, "Value": value} for field, value in payload.items()]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _payloads_effectively_equal(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    return _review_seed_from_bib(left) == _review_seed_from_bib(right)
+
+
 def _review_seed_from_item(item: dict) -> dict:
     return {
         "item_type": item.get("item_type") or "journalArticle",
@@ -357,37 +412,66 @@ def _query_request_id() -> str | None:
     return str(value) if value else None
 
 
-def _render_bar_chart(rows: list[dict], x_field: str, y_field: str, title: str, color: str) -> None:
+def _render_bar_chart(
+    rows: list[dict],
+    x_field: str,
+    y_field: str,
+    title: str,
+    color: str,
+    x_title: str = "Period",
+    y_title: str | None = None,
+) -> None:
     dataframe = pd.DataFrame(rows)
     chart = (
         alt.Chart(dataframe)
         .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2, color=color)
         .encode(
-            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35)),
-            y=alt.Y(f"{y_field}:Q"),
-            tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")],
+            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35), title=x_title),
+            y=alt.Y(f"{y_field}:Q", title=y_title),
+            tooltip=[
+                alt.Tooltip(f"{x_field}:N", title=x_title),
+                alt.Tooltip(f"{y_field}:Q", title=y_title or title),
+            ],
         )
         .properties(title=title)
     )
     st.altair_chart(chart, use_container_width=True)
 
 
-def _render_line_chart(rows: list[dict], x_field: str, y_field: str, title: str, color: str) -> None:
+def _render_line_chart(
+    rows: list[dict],
+    x_field: str,
+    y_field: str,
+    title: str,
+    color: str,
+    x_title: str = "Period",
+    y_title: str | None = None,
+) -> None:
     dataframe = pd.DataFrame(rows)
     chart = (
         alt.Chart(dataframe)
         .mark_line(point=True, strokeWidth=3, color=color)
         .encode(
-            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35)),
-            y=alt.Y(f"{y_field}:Q"),
-            tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")],
+            x=alt.X(f"{x_field}:N", sort=None, axis=alt.Axis(labelAngle=-35), title=x_title),
+            y=alt.Y(f"{y_field}:Q", title=y_title),
+            tooltip=[
+                alt.Tooltip(f"{x_field}:N", title=x_title),
+                alt.Tooltip(f"{y_field}:Q", title=y_title or title),
+            ],
         )
         .properties(title=title)
     )
     st.altair_chart(chart, use_container_width=True)
 
 
-def _render_grouped_bar_chart(rows: list[dict], title: str, color_scale: dict[str, str] | None = None) -> None:
+def _render_grouped_bar_chart(
+    rows: list[dict],
+    title: str,
+    color_scale: dict[str, str] | None = None,
+    legend_title: str = "Category",
+    x_title: str = "Period",
+    y_title: str = "Count",
+) -> None:
     dataframe = pd.DataFrame(rows)
     color = alt.Color("series:N")
     if color_scale:
@@ -397,17 +481,23 @@ def _render_grouped_bar_chart(rows: list[dict], title: str, color_scale: dict[st
                 domain=list(color_scale.keys()),
                 range=list(color_scale.values()),
             ),
-            legend=alt.Legend(title=None),
+            legend=alt.Legend(title=legend_title),
         )
+    else:
+        color = alt.Color("series:N", legend=alt.Legend(title=legend_title))
     chart = (
         alt.Chart(dataframe)
         .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
         .encode(
-            x=alt.X("period:N", sort=None, axis=alt.Axis(labelAngle=-35)),
+            x=alt.X("period:N", sort=None, axis=alt.Axis(labelAngle=-35), title=x_title),
             xOffset=alt.XOffset("series:N"),
-            y=alt.Y("value:Q"),
+            y=alt.Y("value:Q", title=y_title),
             color=color,
-            tooltip=[alt.Tooltip("period:N"), alt.Tooltip("series:N"), alt.Tooltip("value:Q")],
+            tooltip=[
+                alt.Tooltip("period:N", title=x_title),
+                alt.Tooltip("series:N", title=legend_title),
+                alt.Tooltip("value:Q", title=y_title),
+            ],
         )
         .properties(title=title)
     )
@@ -462,7 +552,7 @@ def _render_template_editor() -> None:
     )
     if template_kind == "delivery":
         st.caption(
-            "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {sender_name}"
+            "Available placeholders: {request_id}, {submission_id}, {user_email}, {user_name}, {greeting_name}, {item_count}, {items_text}, {items_html}, {bibtex_filename}, {bibtex_note_text}, {bibtex_note_html}, {sender_name}"
         )
         templates = fetch_email_templates()
     elif template_kind == "clarification":
@@ -514,6 +604,7 @@ def _render_requests_page() -> None:
 
     table_rows = [
         {
+            "select": False,
             "request_id": request["request_id"],
             "status": request["status"],
             "user_email": request["user_email"],
@@ -522,19 +613,34 @@ def _render_requests_page() -> None:
         }
         for request in requests_data
     ]
-    st.subheader("Queue")
-    st.dataframe(table_rows, use_container_width=True, hide_index=True)
-
     request_ids = [request["request_id"] for request in requests_data]
     requested_request_id = _query_request_id()
-    initial_index = 0
-    if requested_request_id and requested_request_id in request_ids:
-        initial_index = request_ids.index(requested_request_id)
-    selected_request = (
-        st.selectbox("Request", request_ids, index=initial_index, key="request-select")
-        if request_ids
-        else None
+    selected_request = None
+    st.subheader("Queue")
+    queue_df = pd.DataFrame([{key: value for key, value in row.items() if key != "select"} for row in table_rows])
+    event = st.dataframe(
+        queue_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="request-queue-selection",
     )
+
+    if request_ids:
+        selected_request = st.session_state.get("selected_request_id")
+        if requested_request_id and requested_request_id in request_ids:
+            selected_request = requested_request_id
+        selection_rows = event.selection.rows if hasattr(event, "selection") else []
+        if selection_rows:
+            try:
+                selected_request = str(queue_df.iloc[selection_rows[0]]["request_id"])
+            except Exception:
+                pass
+        if selected_request not in request_ids:
+            selected_request = request_ids[0]
+
+    st.session_state["selected_request_id"] = selected_request
     if selected_request:
         st.query_params["request_id"] = selected_request
     if requested_request_id and requested_request_id not in request_ids:
@@ -549,7 +655,8 @@ def _render_requests_page() -> None:
     summary_col, action_col = st.columns([4, 1])
     with summary_col:
         st.subheader(f"Request {request['request_id']}")
-        st.write(
+        _render_key_value_payload(
+            "Request details",
             {
                 "status": request["status"],
                 "submission_id": request["formcycle_submission_id"],
@@ -557,12 +664,19 @@ def _render_requests_page() -> None:
                 "delivery_days": request["delivery_days"],
                 "notification_sent_at": request["notification_sent_at"],
                 "last_error": request["last_error"],
-            }
+            },
+            key=f"request-summary-{request['request_id']}",
         )
     with action_col:
-        if st.button("Retry request", use_container_width=True):
-            retry_request(selected_request)
-            st.rerun()
+        retryable_request_statuses = {"FAILED", "NEEDS_REVIEW", "AWAITING_USER", "ATTENTION"}
+        retryable_item_statuses = {"FAILED", "NEEDS_REVIEW", "AWAITING_USER", "READY_TO_NOTIFY"}
+        can_retry = request["status"] in retryable_request_statuses or any(
+            item["status"] in retryable_item_statuses for item in request["items"]
+        )
+        if can_retry:
+            if st.button("Retry request", use_container_width=True):
+                retry_request(selected_request)
+                st.rerun()
 
     st.subheader("Items")
     item_rows = [
@@ -587,28 +701,10 @@ def _render_requests_page() -> None:
     st.dataframe(item_rows, use_container_width=True, hide_index=True)
 
     rejectable_items = [
-        item for item in request["items"] if item["status"] not in {"DELIVERED", "REJECTED"}
+        item
+        for item in request["items"]
+        if item["status"] in {"PENDING_METADATA", "NEEDS_REVIEW", "AWAITING_USER", "FAILED"}
     ]
-    if rejectable_items:
-        st.subheader("Reject item")
-        rejected_item = st.selectbox(
-            "Item to reject",
-            rejectable_items,
-            format_func=lambda item: f"#{item['item_index']} {item['title']} ({item['status']})",
-            key=f"reject-item-{request['request_id']}",
-        )
-        with st.form(f"reject-item-form-{rejected_item['id']}"):
-            rejection_reason = st.text_area(
-                "Reason for rejection",
-                value="",
-                help="This reason is sent to the requester in the rejection mail.",
-                height=120,
-            )
-            reject_submitted = st.form_submit_button("Reject item")
-            if reject_submitted:
-                reject_item(request["request_id"], rejected_item["id"], rejection_reason)
-                st.success("Rejection mail sent and item rejected.")
-                st.rerun()
 
     review_candidates = [item for item in request["items"] if item["status"] == "NEEDS_REVIEW"]
     if review_candidates:
@@ -620,13 +716,18 @@ def _render_requests_page() -> None:
         )
         raw_json = selected_review.get("raw_json")
         normalized_json = selected_review.get("normalized_json")
+        original_bib = _parse_json_object(raw_json)
+        normalized_bib = _parse_json_object(normalized_json)
+        has_effective_normalization = bool(normalized_bib and not _payloads_effectively_equal(original_bib, normalized_bib))
         left, right = st.columns(2)
         with left:
-            st.caption("Original payload")
-            st.code(raw_json or "No raw payload stored", language="json")
+            _render_bib_payload("Original payload", original_bib, f"raw-json-{selected_review['id']}")
         with right:
-            st.caption("Proposed normalization")
-            st.code(normalized_json or "No normalized payload stored", language="json")
+            if has_effective_normalization:
+                _render_bib_payload("Proposed normalization", normalized_bib, f"normalized-json-{selected_review['id']}")
+            else:
+                st.caption("Proposed normalization")
+                st.info("No effective normalization changes proposed.")
 
         latest_clarification = _latest_user_clarification(events, selected_review["id"])
         if latest_clarification:
@@ -637,11 +738,9 @@ def _render_requests_page() -> None:
             st.caption(f"Received: {latest_clarification['created_at']}")
 
         review_presets: dict[str, dict] = {"Current item values": _review_seed_from_item(selected_review)}
-        original_bib = _parse_json_object(raw_json)
         if original_bib:
             review_presets["Original submission"] = _review_seed_from_bib(original_bib)
-        normalized_bib = _parse_json_object(normalized_json)
-        if normalized_bib:
+        if has_effective_normalization and normalized_bib:
             review_presets["Proposed normalization"] = _review_seed_from_bib(normalized_bib)
 
         resolution_json = selected_review.get("resolution_json")
@@ -666,21 +765,27 @@ def _render_requests_page() -> None:
                 st.dataframe(evidence_rows, use_container_width=True, hide_index=True)
                 for evidence_item in evidence:
                     candidate_json = evidence_item.get("candidate_json")
+                    candidate_bib = None
                     if candidate_json:
                         candidate_bib = _parse_json_object(candidate_json)
                         if candidate_bib:
                             candidate_seed = _review_seed_from_bib(candidate_bib)
                             source_name = evidence_item.get("source") or "source"
                             review_presets[f"{source_name} candidate"] = candidate_seed
-                            quick_actions.append(
-                                (
-                                    f"Accept {source_name}",
-                                    candidate_seed,
-                                    f"Accepted {source_name} candidate directly",
+                            if evidence_item.get("status") == "validated":
+                                quick_actions.append(
+                                    (
+                                        f"Accept {source_name}",
+                                        candidate_seed,
+                                        f"Accepted {source_name} candidate directly",
+                                    )
                                 )
-                            )
                         with st.expander(f"{evidence_item.get('source')} candidate"):
-                            st.code(candidate_json, language="json")
+                            _render_bib_payload(
+                                f"{evidence_item.get('source')} candidate",
+                                candidate_bib,
+                                f"candidate-json-{selected_review['id']}-{evidence_item.get('source')}",
+                            )
 
         if original_bib:
             quick_actions.insert(
@@ -692,7 +797,7 @@ def _render_requests_page() -> None:
                 ),
             )
 
-        if normalized_bib:
+        if has_effective_normalization and normalized_bib:
             quick_actions.append(
                 (
                     "Accept proposed normalization",
@@ -723,6 +828,9 @@ def _render_requests_page() -> None:
             )
             clarification_submitted = st.form_submit_button("Request clarification")
             if clarification_submitted:
+                if not clarification_message.strip():
+                    st.error("A clarification message is required.")
+                    st.stop()
                 request_clarification(request["request_id"], selected_review["id"], clarification_message)
                 st.success("Clarification request sent.")
                 st.rerun()
@@ -783,6 +891,30 @@ def _render_requests_page() -> None:
                 )
                 st.rerun()
 
+    if rejectable_items:
+        st.subheader("Reject item")
+        rejected_item = st.selectbox(
+            "Item to reject",
+            rejectable_items,
+            format_func=lambda item: f"#{item['item_index']} {item['title']} ({item['status']})",
+            key=f"reject-item-{request['request_id']}",
+        )
+        with st.form(f"reject-item-form-{rejected_item['id']}"):
+            rejection_reason = st.text_area(
+                "Reason for rejection",
+                value="",
+                help="This reason is sent to the requester in the rejection mail.",
+                height=120,
+            )
+            reject_submitted = st.form_submit_button("Reject item")
+            if reject_submitted:
+                if not rejection_reason.strip():
+                    st.error("A rejection reason is required.")
+                    st.stop()
+                reject_item(request["request_id"], rejected_item["id"], rejection_reason)
+                st.success("Rejection mail sent and item rejected.")
+                st.rerun()
+
     upload_candidates = [
         item
         for item in request["items"]
@@ -839,19 +971,27 @@ def _render_requests_page() -> None:
 
 def _render_statistics_page() -> None:
     st.subheader("Statistics")
+    granularity_labels = {
+        "day": "Daily",
+        "week": "Weekly",
+        "month": "Monthly",
+        "year": "Yearly",
+    }
     control_col1, control_col2 = st.columns(2)
     with control_col1:
         granularity = st.selectbox(
             "Granularity",
-            ["month", "year"],
-            format_func=lambda value: "Monthly" if value == "month" else "Yearly",
+            ["day", "week", "month", "year"],
+            format_func=lambda value: granularity_labels[value],
         )
     with control_col2:
+        period_max = {"day": 90, "week": 52, "month": 36, "year": 10}[granularity]
+        period_default = {"day": 30, "week": 12, "month": 12, "year": 5}[granularity]
         periods = st.slider(
             "Periods",
             min_value=3,
-            max_value=36 if granularity == "month" else 10,
-            value=12 if granularity == "month" else 5,
+            max_value=period_max,
+            value=period_default,
         )
 
     stats = fetch_statistics(granularity=granularity, periods=periods)
@@ -909,9 +1049,23 @@ def _render_statistics_page() -> None:
     st.subheader("Charts")
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
-        _render_bar_chart(table_rows, "period", "requests", "Requests per Period", "#b14d31")
+        _render_bar_chart(
+            table_rows,
+            "period",
+            "requests",
+            "Requests per Period",
+            "#b14d31",
+            y_title="Requests",
+        )
     with chart_col2:
-        _render_line_chart(table_rows, "period", "fulfillment_rate_pct", "Fulfillment Rate (%)", "#4c7a6f")
+        _render_line_chart(
+            table_rows,
+            "period",
+            "fulfillment_rate_pct",
+            "Fulfillment Rate (%)",
+            "#4c7a6f",
+            y_title="Fulfillment rate (%)",
+        )
 
     outcome_rows = []
     for row in table_rows:
@@ -939,6 +1093,8 @@ def _render_statistics_page() -> None:
                 "Fulfilled requests": "#4c7a6f",
                 "Rejected requests": "#9b2c2c",
             },
+            legend_title="Request outcome",
+            y_title="Requests",
         )
     with secondary_chart_col2:
         _render_grouped_bar_chart(
@@ -949,12 +1105,28 @@ def _render_statistics_page() -> None:
                 "Invalid metadata": "#C0392B",
                 "Clarifications": "#D4A017",
             },
+            legend_title="Metadata status",
+            y_title="Items",
         )
     tertiary_chart_col1, tertiary_chart_col2 = st.columns(2)
     with tertiary_chart_col1:
-        _render_bar_chart(table_rows, "period", "reused_items", "Reused Zotero Items", "#7b5ea7")
+        _render_bar_chart(
+            table_rows,
+            "period",
+            "reused_items",
+            "Reused Zotero Items",
+            "#7b5ea7",
+            y_title="Reused items",
+        )
     with tertiary_chart_col2:
-        _render_bar_chart(table_rows, "period", "rejected_items", "Rejected Items", "#9b2c2c")
+        _render_bar_chart(
+            table_rows,
+            "period",
+            "rejected_items",
+            "Rejected Items",
+            "#9b2c2c",
+            y_title="Rejected items",
+        )
 
     st.subheader("Table")
     st.dataframe(table_rows, use_container_width=True, hide_index=True)

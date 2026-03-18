@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     notification_retry_interval_seconds: int = 900
     default_link_expiry_days: int = 14
     normalization_auto_accept_threshold: float = 0.92
+    normalization_auto_accept_threshold_lobid: float = 0.90
+    normalization_auto_accept_threshold_gbv: float = 0.90
 
     openalex_email: str | None = None
     crossref_mailto: str | None = None

@@ -172,9 +172,15 @@ def list_job_events(request_id: str) -> list[JobEventSummary]:
 
 def get_period_statistics(granularity: str = "month", periods: int = 12) -> list[PeriodStatisticsSummary]:
     normalized_granularity = granularity.strip().lower()
-    if normalized_granularity not in {"month", "year"}:
+    if normalized_granularity not in {"day", "week", "month", "year"}:
         raise ValueError("Unsupported granularity")
-    capped_periods = max(1, min(periods, 60))
+    if normalized_granularity == "day":
+        max_periods = 120
+    elif normalized_granularity == "week":
+        max_periods = 104
+    else:
+        max_periods = 60
+    capped_periods = max(1, min(periods, max_periods))
 
     now = datetime.now(timezone.utc)
     period_starts = _period_starts(now, normalized_granularity, capped_periods)
@@ -707,6 +713,7 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
         item = next((candidate for candidate in request.items if candidate.id == payload.item_id), None)
         if not item:
             return False
+        was_finalized = bool(request.notification_sent_at)
 
         item.title = corrected_bib.title
         item.creators = "; ".join(corrected_bib.creators)
@@ -735,6 +742,8 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
         item.status = "PENDING_METADATA"
         item.last_error = None
         item.next_poll_at = None
+        if was_finalized:
+            request.notification_sent_at = None
         request.last_error = None
         _sync_request_status(session, request)
         log_event(
@@ -747,6 +756,7 @@ def ingest_clarification_response(payload: FormCycleClarificationResponse) -> bo
                 "operator_message": payload.operator_message,
                 "bibliographic_data": corrected_bib.model_dump(mode="json"),
                 "requeued_for_resolution": True,
+                "reopened_finalized_request": was_finalized,
             },
         )
         return True
@@ -1019,7 +1029,7 @@ def _process_metadata_stage(snapshot: dict) -> None:
     confidence = f"{result.confidence:.2f}"
     _log_resolution_events(snapshot["request_id"], snapshot["item_id"], result)
 
-    if result.confidence < settings.normalization_auto_accept_threshold:
+    if not _auto_accept_result(result):
         _update_item(
             snapshot["item_id"],
             title=normalized_bib.title,
@@ -1303,6 +1313,7 @@ def _maybe_finalize_request(request_id: str) -> None:
             user_name=request.user_name,
             language=request.form_language,
             status="DELIVERED",
+            bibtex_filename=f"document-delivery-{request.request_id}.bib",
             items=[
                 DeliveryItemPayload(
                     item_index=item.item_index,
@@ -1310,6 +1321,7 @@ def _maybe_finalize_request(request_id: str) -> None:
                     download_url=item.download_url or "",
                     expires_on=item.expires_on or "",
                     zotero_item_key=item.zotero_item_key or "",
+                    bibliographic_data=_item_to_bib(item),
                 )
                 for item in deliverable_items
             ],
@@ -1369,6 +1381,7 @@ def _mark_item_failed(snapshot: dict, exc: Exception) -> None:
 def _log_resolution_events(request_id: str, request_item_id: int, result) -> None:
     with session_scope() as session:
         winner_source = result.source if result.source != "original" else None
+        auto_accept = _auto_accept_result(result)
         for evidence in result.evidence:
             payload = {
                 "source": evidence.source,
@@ -1393,10 +1406,22 @@ def _log_resolution_events(request_id: str, request_item_id: int, result) -> Non
             payload={
                 "source": result.source,
                 "confidence": result.confidence,
-                "auto_accept": result.confidence >= settings.normalization_auto_accept_threshold,
+                "auto_accept": auto_accept,
                 "winner_source": winner_source,
             },
         )
+
+
+def _auto_accept_threshold_for_source(source: str | None) -> float:
+    if source == "lobid":
+        return settings.normalization_auto_accept_threshold_lobid
+    if source == "gbv":
+        return settings.normalization_auto_accept_threshold_gbv
+    return settings.normalization_auto_accept_threshold
+
+
+def _auto_accept_result(result) -> bool:
+    return result.confidence >= _auto_accept_threshold_for_source(result.source)
 
 
 def _log_zotero_match_event(
@@ -1609,7 +1634,12 @@ def _bucket_start(value: datetime, granularity: str) -> datetime:
     normalized = value.astimezone(timezone.utc)
     if granularity == "year":
         return normalized.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-    return normalized.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if granularity == "month":
+        return normalized.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if granularity == "week":
+        start_of_day = normalized.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start_of_day - timedelta(days=start_of_day.weekday())
+    return normalized.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _period_starts(now: datetime, granularity: str, periods: int) -> list[datetime]:
@@ -1618,6 +1648,10 @@ def _period_starts(now: datetime, granularity: str, periods: int) -> list[dateti
     for offset in reversed(range(periods)):
         if granularity == "year":
             starts.append(current.replace(year=current.year - offset))
+        elif granularity == "week":
+            starts.append(current - timedelta(weeks=offset))
+        elif granularity == "day":
+            starts.append(current - timedelta(days=offset))
         else:
             year = current.year
             month = current.month - offset
@@ -1631,6 +1665,11 @@ def _period_starts(now: datetime, granularity: str, periods: int) -> list[dateti
 def _period_label(start: datetime, granularity: str) -> str:
     if granularity == "year":
         return start.strftime("%Y")
+    if granularity == "week":
+        iso_year, iso_week, _ = start.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if granularity == "day":
+        return start.strftime("%Y-%m-%d")
     return start.strftime("%Y-%m")
 
 

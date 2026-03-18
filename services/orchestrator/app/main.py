@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
+from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from pydantic import ValidationError
 
+from app.clarification import parse_clarification_token
 from app.config import settings
 from app.db import init_db
 from app.jobs import (
@@ -43,11 +47,152 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Document Delivery Orchestrator", lifespan=lifespan)
+logger = logging.getLogger(__name__)
 
 
 def _check_token(provided: str | None, expected: str | None, name: str) -> None:
     if expected and provided != expected:
         raise HTTPException(status_code=401, detail=f"Invalid {name}")
+
+
+def _build_request_payload(payload: dict) -> dict:
+    if payload.get("items"):
+        return payload
+
+    bibliographic_data = None
+    bibtex = (payload.get("bibtex") or "").strip() or None
+    author = payload.get("author")
+    if not bibtex:
+        title = payload.get("workTitle") or payload.get("title")
+        publication_title = payload.get("container_title") or payload.get("publication_title")
+        year = payload.get("issued") or payload.get("year")
+        if title and publication_title and year:
+            bibliographic_data = {
+                "item_type": payload.get("item_type") or "journalArticle",
+                "title": title,
+                "creators": [author] if author else [],
+                "publication_title": publication_title,
+                "year": year,
+                "volume": payload.get("volume") or None,
+                "issue": payload.get("issue") or None,
+                "pages": payload.get("page") or payload.get("pages") or None,
+                "doi": payload.get("DOI") or payload.get("doi") or None,
+                "publisher": payload.get("publisher") or None,
+                "place": payload.get("place") or None,
+                "series": payload.get("series") or None,
+                "edition": payload.get("edition") or None,
+                "isbn": payload.get("isbn") or None,
+            }
+
+    item_index_raw = payload.get("item_index")
+    try:
+        item_index = int(item_index_raw) if item_index_raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        item_index = 0
+
+    request_id = payload.get("request_id") or payload.get("formcycle_submission_id")
+    formcycle_submission_id = payload.get("formcycle_submission_id")
+    user_email = payload.get("user_email") or payload.get("email")
+    user_name = payload.get("user_name")
+    if not user_name:
+        given_name = (payload.get("givenName") or "").strip()
+        surname = (payload.get("surname") or "").strip()
+        user_name = " ".join(part for part in (given_name, surname) if part).strip() or None
+
+    return {
+        "request_id": request_id,
+        "formcycle_submission_id": formcycle_submission_id,
+        "user_email": user_email,
+        "user_name": user_name,
+        "language": payload.get("language"),
+        "delivery_days": payload.get("delivery_days"),
+        "items": [
+            {
+                "item_index": item_index,
+                "bibliographic_data": bibliographic_data,
+                "bibtex": bibtex,
+            }
+        ],
+    }
+
+
+def _build_clarification_payload(payload: dict) -> dict:
+    token = payload.get("token")
+    token_claims = parse_clarification_token(token) if token else None
+    author = payload.get("author")
+    return {
+        "request_id": payload.get("request_id") or (token_claims or {}).get("request_id"),
+        "item_id": payload.get("item_id") or (token_claims or {}).get("item_id"),
+        "token": token,
+        "operator_message": payload.get("operator_message"),
+        "user_note": payload.get("user_note"),
+        "bibliographic_data": {
+            "item_type": payload.get("item_type") or "journalArticle",
+            "title": payload.get("workTitle") or payload.get("title") or "",
+            "creators": [author] if author else [],
+            "publication_title": payload.get("container_title") or payload.get("publication_title") or "",
+            "year": payload.get("issued") or payload.get("year") or "",
+            "volume": payload.get("volume") or None,
+            "issue": payload.get("issue") or None,
+            "pages": payload.get("page") or payload.get("pages") or None,
+            "doi": payload.get("DOI") or payload.get("doi") or None,
+            "publisher": payload.get("publisher") or None,
+            "place": payload.get("place") or None,
+            "series": payload.get("series") or None,
+            "edition": payload.get("edition") or None,
+            "isbn": payload.get("isbn") or None,
+        },
+    }
+
+
+async def _parse_formcycle_request(request: Request) -> FormCycleRequest:
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON payload must be an object")
+        logger.info("FormCycle request webhook received JSON payload with keys: %s", sorted(payload.keys()))
+        return FormCycleRequest(**_build_request_payload(payload))
+
+    raw_body = await request.body()
+    form = await request.form()
+    payload = {key: value for key, value in form.multi_items()}
+    if not payload:
+        body = raw_body.decode("utf-8", errors="ignore").strip()
+        if body:
+            payload = dict(parse_qsl(body, keep_blank_values=True))
+    logger.warning(
+        "FormCycle request webhook content-type=%s form payload keys=%s raw_body=%r",
+        content_type,
+        sorted(payload.keys()),
+        raw_body[:1000],
+    )
+    return FormCycleRequest(**_build_request_payload(payload))
+
+
+async def _parse_formcycle_clarification(request: Request) -> FormCycleClarificationResponse:
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON payload must be an object")
+        logger.info("FormCycle clarification webhook received JSON payload with keys: %s", sorted(payload.keys()))
+        return FormCycleClarificationResponse(**payload)
+
+    raw_body = await request.body()
+    form = await request.form()
+    payload = {key: value for key, value in form.multi_items()}
+    if not payload:
+        body = raw_body.decode("utf-8", errors="ignore").strip()
+        if body:
+            payload = dict(parse_qsl(body, keep_blank_values=True))
+    logger.warning(
+        "FormCycle clarification webhook content-type=%s form payload keys=%s raw_body=%r",
+        content_type,
+        sorted(payload.keys()),
+        raw_body[:1000],
+    )
+    return FormCycleClarificationResponse(**_build_clarification_payload(payload))
 
 
 @app.get("/health")
@@ -56,21 +201,37 @@ def health() -> dict:
 
 
 @app.post("/webhooks/formcycle/requests")
-def formcycle_webhook(
-    payload: FormCycleRequest,
+async def formcycle_webhook(
+    request: Request,
     x_formcycle_secret: str | None = Header(default=None),
 ) -> dict:
     _check_token(x_formcycle_secret, settings.formcycle_webhook_secret, "FormCycle secret")
+    try:
+        payload = await _parse_formcycle_request(request)
+    except ValidationError as exc:
+        logger.warning("FormCycle request validation failed: %s", exc.errors())
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    except ValueError as exc:
+        logger.warning("FormCycle request payload rejected: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     request_id, created = create_request(payload)
     return {"request_id": request_id, "created": created}
 
 
 @app.post("/webhooks/formcycle/clarifications")
-def formcycle_clarification_webhook(
-    payload: FormCycleClarificationResponse,
+async def formcycle_clarification_webhook(
+    request: Request,
     x_formcycle_secret: str | None = Header(default=None),
 ) -> dict:
     _check_token(x_formcycle_secret, settings.formcycle_webhook_secret, "FormCycle secret")
+    try:
+        payload = await _parse_formcycle_clarification(request)
+    except ValidationError as exc:
+        logger.warning("FormCycle clarification validation failed: %s", exc.errors())
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    except ValueError as exc:
+        logger.warning("FormCycle clarification payload rejected: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         accepted = ingest_clarification_response(payload)
     except ValueError as exc:

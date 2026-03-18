@@ -115,6 +115,13 @@ def _year_from_text(value: str | None) -> str:
     return match.group(1) if match else ""
 
 
+def _normalize_pages(value: str | None) -> str | None:
+    cleaned = _clean(value)
+    if not cleaned:
+        return None
+    return cleaned.replace("--", "-")
+
+
 def _crossref_people(people: list[dict] | None) -> list[str]:
     result: list[str] = []
     for person in people or []:
@@ -165,6 +172,16 @@ def _extract_isbn_from_identifiers(identifiers: list[object]) -> str | None:
         if len(cleaned) in {10, 13}:
             return cleaned.upper()
     return None
+
+
+def _should_hide_evidence_match(bib: BibliographicData, match: ResolutionMatch) -> bool:
+    return (
+        bib.item_type == "bookSection"
+        and match.source in {"crossref", "openalex"}
+        and match.status == "not_found"
+        and match.score == 0.0
+        and match.explanation.startswith("type mismatch")
+    )
 
 
 def _parse_sru_dc_records(xml_text: str) -> list[dict]:
@@ -453,21 +470,51 @@ class CrossrefResolver:
         )
 
         if doi_mismatch:
+            candidate = _make_bib(
+                bib,
+                title=resolved_title or None,
+                creators=_crossref_people(item.get("author")) or None,
+                editors=_crossref_people(item.get("editor")) or None,
+                publication_title=container_title or None,
+                year=candidate_year or None,
+                volume=_clean(item.get("volume")) or None,
+                issue=_clean(item.get("issue")) or None,
+                pages=_normalize_pages(_clean(item.get("page"))) or None,
+                doi=_clean(item.get("DOI")) or None,
+                publisher=_clean(item.get("publisher")) or None,
+                place=_clean(item.get("publisher-location")) or None,
+            )
             return ResolutionMatch(
                 "crossref",
                 "invalid",
                 0.0,
                 f"DOI mismatch (got {item.get('DOI')})",
+                candidate,
                 title_score=title_score,
                 container_score=container_score,
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
         if bib.title and trust_ref_doi and title_score < MIN_TITLE_SCORE_FOR_DOI_MATCH:
+            candidate = _make_bib(
+                bib,
+                title=resolved_title or None,
+                creators=_crossref_people(item.get("author")) or None,
+                editors=_crossref_people(item.get("editor")) or None,
+                publication_title=container_title or None,
+                year=candidate_year or None,
+                volume=_clean(item.get("volume")) or None,
+                issue=_clean(item.get("issue")) or None,
+                pages=_normalize_pages(_clean(item.get("page"))) or None,
+                doi=_clean(item.get("DOI")) or None,
+                publisher=_clean(item.get("publisher")) or None,
+                place=_clean(item.get("publisher-location")) or None,
+            )
             return ResolutionMatch(
                 "crossref",
                 "invalid",
                 title_score,
                 f"title mismatch (score {title_score:.2f})",
+                candidate,
                 title_score=title_score,
                 container_score=container_score,
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
@@ -524,11 +571,27 @@ class CrossrefResolver:
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
 
+        candidate = _make_bib(
+            bib,
+            title=resolved_title or None,
+            creators=_crossref_people(item.get("author")) or None,
+            editors=_crossref_people(item.get("editor")) or None,
+            publication_title=container_title or None,
+            year=candidate_year or None,
+            volume=_clean(item.get("volume")) or None,
+            issue=_clean(item.get("issue")) or None,
+            pages=_normalize_pages(_clean(item.get("page"))) or None,
+            doi=_clean(item.get("DOI")) or None,
+            publisher=_clean(item.get("publisher")) or None,
+            place=_clean(item.get("publisher-location")) or None,
+            series=resolved_series or None,
+        )
         return ResolutionMatch(
             "crossref",
             "invalid",
             score,
             f"best score too low ({score:.2f})",
+            candidate,
             title_score=title_score,
             container_score=container_score,
             year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
@@ -585,6 +648,15 @@ class OpenAlexResolver:
         candidate_year = str(work.get("publication_year") or "")
         first_author_name = (((work.get("authorships") or [{}])[0].get("author") or {}).get("display_name") or "")
         first_author_last_name = first_author_name.split()[-1] if first_author_name else ""
+        creators = []
+        for authorship in work.get("authorships") or []:
+            display_name = ((authorship.get("author") or {}).get("display_name") or "").strip()
+            if display_name:
+                parts = display_name.split()
+                if len(parts) > 1:
+                    creators.append(f"{parts[-1]}, {' '.join(parts[:-1])}")
+                else:
+                    creators.append(display_name)
         score, doi_mismatch, title_score, container_score = _score_candidate(
             bib,
             title=title,
@@ -596,21 +668,43 @@ class OpenAlexResolver:
         )
 
         if doi_mismatch:
+            candidate = _make_bib(
+                bib,
+                title=title or None,
+                creators=creators or None,
+                publication_title=container_title or None,
+                year=candidate_year or None,
+                volume=_clean((work.get("biblio") or {}).get("volume")) or None,
+                issue=_clean((work.get("biblio") or {}).get("issue")) or None,
+                doi=work.get("doi"),
+            )
             return ResolutionMatch(
                 "openalex",
                 "invalid",
                 0.0,
                 f"DOI mismatch (got {work.get('doi')})",
+                candidate,
                 title_score=title_score,
                 container_score=container_score,
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
         if bib.title and trust_ref_doi and title_score < MIN_TITLE_SCORE_FOR_DOI_MATCH:
+            candidate = _make_bib(
+                bib,
+                title=title or None,
+                creators=creators or None,
+                publication_title=container_title or None,
+                year=candidate_year or None,
+                volume=_clean((work.get("biblio") or {}).get("volume")) or None,
+                issue=_clean((work.get("biblio") or {}).get("issue")) or None,
+                doi=work.get("doi"),
+            )
             return ResolutionMatch(
                 "openalex",
                 "invalid",
                 title_score,
                 f"title mismatch (score {title_score:.2f})",
+                candidate,
                 title_score=title_score,
                 container_score=container_score,
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
@@ -630,16 +724,6 @@ class OpenAlexResolver:
                 container_score=container_score,
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
-
-        creators = []
-        for authorship in work.get("authorships") or []:
-            display_name = ((authorship.get("author") or {}).get("display_name") or "").strip()
-            if display_name:
-                parts = display_name.split()
-                if len(parts) > 1:
-                    creators.append(f"{parts[-1]}, {' '.join(parts[:-1])}")
-                else:
-                    creators.append(display_name)
 
         if score >= 0.8:
             biblio = work.get("biblio") or {}
@@ -670,11 +754,31 @@ class OpenAlexResolver:
                 year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
             )
 
+        candidate = _make_bib(
+            bib,
+            title=title or None,
+            creators=creators or None,
+            publication_title=container_title or None,
+            year=candidate_year or None,
+            volume=_clean((work.get("biblio") or {}).get("volume")) or None,
+            issue=_clean((work.get("biblio") or {}).get("issue")) or None,
+            pages=_normalize_pages(
+                (
+                    f"{_clean((work.get('biblio') or {}).get('first_page'))}-{_clean((work.get('biblio') or {}).get('last_page'))}"
+                    if _clean((work.get("biblio") or {}).get("first_page")) and _clean((work.get("biblio") or {}).get("last_page"))
+                    else _clean((work.get("biblio") or {}).get("first_page"))
+                )
+            )
+            or None,
+            doi=work.get("doi"),
+            isbn=_clean((work.get("ids") or {}).get("isbn")) or None,
+        )
         return ResolutionMatch(
             "openalex",
             "invalid",
             score,
             f"best score too low ({score:.2f})",
+            candidate,
             title_score=title_score,
             container_score=container_score,
             year_match=bool(bib.year and candidate_year and bib.year == candidate_year),
@@ -883,6 +987,7 @@ class ResolutionService:
         if bib.item_type in {"bookSection", "book"}:
             resolvers = [*self.book_resolvers, *resolvers]
         matches = [resolver.resolve(bib) for resolver in resolvers]
+        visible_matches = [match for match in matches if not _should_hide_evidence_match(bib, match)]
         evidence = [
             ResolutionEvidence(
                 source=match.source,
@@ -891,7 +996,7 @@ class ResolutionService:
                 explanation=match.explanation,
                 candidate_json=match.candidate.model_dump_json() if match.candidate else None,
             )
-            for match in matches
+            for match in visible_matches
         ]
         validated = [match for match in matches if match.status == "validated" and match.candidate is not None]
         if validated:
@@ -925,7 +1030,7 @@ class ResolutionService:
                 bibliographic_data=normalized_bib,
                 source=best.source,
                 confidence=best.score,
-                notes=self._summarize(matches, best.source, note_suffix),
+                notes=self._summarize(visible_matches, best.source, note_suffix),
                 evidence=evidence,
             )
 
@@ -934,7 +1039,7 @@ class ResolutionService:
             bibliographic_data=bib,
             source="original",
             confidence=fallback_confidence,
-            notes=self._summarize(matches, None),
+            notes=self._summarize(visible_matches, None),
             evidence=evidence,
         )
 

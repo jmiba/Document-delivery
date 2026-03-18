@@ -12,6 +12,7 @@ from urllib.parse import quote
 import requests
 from sqlalchemy import select
 
+from app.bibtex import export_bibtex_entry
 from app.config import settings
 from app.db import session_scope
 from app.models import ClarificationTemplate, EmailTemplate, RejectionTemplate
@@ -672,6 +673,7 @@ class NotificationClient:
             subject=render_template(template["subject_template"], context),
             body_text=render_template(template["body_text_template"], context),
             body_html=render_template(template["body_html_template"], context),
+            attachments=self._delivery_attachments(rendered_payload),
         )
 
     def send_clarification_request(self, payload: ClarificationNotificationPayload) -> None:
@@ -700,7 +702,14 @@ class NotificationClient:
             body_html=render_template(template["body_html_template"], context),
         )
 
-    def _send_email(self, recipient: str, subject: str, body_text: str, body_html: str) -> None:
+    def _send_email(
+        self,
+        recipient: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        attachments: list[dict[str, str | bytes]] | None = None,
+    ) -> None:
         if not self.smtp_from_email:
             raise RuntimeError("SMTP_FROM_EMAIL must be configured when SMTP_HOST is set.")
 
@@ -712,6 +721,16 @@ class NotificationClient:
             message["Reply-To"] = self.smtp_reply_to
         message.set_content(body_text)
         message.add_alternative(body_html, subtype="html")
+        for attachment in attachments or []:
+            content = attachment.get("content", b"")
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            message.add_attachment(
+                content,
+                maintype=str(attachment.get("maintype") or "application"),
+                subtype=str(attachment.get("subtype") or "octet-stream"),
+                filename=str(attachment.get("filename") or "attachment.bin"),
+            )
 
         if self.smtp_use_ssl:
             smtp = smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, timeout=30)
@@ -768,6 +787,7 @@ class NotificationClient:
     def _template_context(self, payload: DeliveryNotificationPayload) -> dict[str, str]:
         language = _normalize_language(payload.language)
         greeting_name = payload.user_name or self._translation(language, "greeting_fallback")
+        bibtex_filename = payload.bibtex_filename or f"document-delivery-{payload.request_id}.bib"
         return {
             "request_id": payload.request_id,
             "submission_id": payload.formcycle_submission_id or "",
@@ -777,6 +797,11 @@ class NotificationClient:
             "item_count": str(len(payload.items)),
             "items_html": self._items_html(payload),
             "items_text": self._items_text(payload),
+            "bibtex_filename": bibtex_filename,
+            "bibtex_note_text": self._translation(language, "bibtex_note_text").format(bibtex_filename=bibtex_filename),
+            "bibtex_note_html": self._escape_html(
+                self._translation(language, "bibtex_note_text").format(bibtex_filename=bibtex_filename)
+            ),
             "sender_name": self.smtp_from_name,
         }
 
@@ -867,6 +892,24 @@ class NotificationClient:
             )
         return payload.model_copy(update={"items": rendered_items, "language": language})
 
+    def _delivery_attachments(self, payload: DeliveryNotificationPayload) -> list[dict[str, str | bytes]]:
+        filename = payload.bibtex_filename or f"document-delivery-{payload.request_id}.bib"
+        entries = [
+            export_bibtex_entry(item.bibliographic_data, key=f"{payload.request_id}_{item.item_index + 1}")
+            for item in payload.items
+        ]
+        bibtex_content = "\n\n".join(entry for entry in entries if entry.strip())
+        if not bibtex_content:
+            return []
+        return [
+            {
+                "filename": filename,
+                "content": bibtex_content,
+                "maintype": "application",
+                "subtype": "x-bibtex",
+            }
+        ]
+
     def _translation(self, language: str, key: str) -> str:
         translations = {
             "de": {
@@ -878,6 +921,10 @@ class NotificationClient:
                 "download_link": "PDF herunterladen",
                 "download_label": "Download",
                 "valid_until": "Link gültig bis",
+                "bibtex_note_text": (
+                    "Im Anhang finden Sie außerdem die Datei {bibtex_filename}. "
+                    "Sie können diese in viele Literaturverwaltungsprogramme importieren."
+                ),
                 "closing_html": "Mit freundlichen Grüßen",
                 "closing_text": "Mit freundlichen Grüßen",
             },
@@ -890,6 +937,10 @@ class NotificationClient:
                 "download_link": "Download PDF",
                 "download_label": "Download",
                 "valid_until": "Link valid until",
+                "bibtex_note_text": (
+                    "The attachment also includes the file {bibtex_filename}. "
+                    "You can import it into many reference managers."
+                ),
                 "closing_html": "Kind regards",
                 "closing_text": "Kind regards",
             },
@@ -902,6 +953,10 @@ class NotificationClient:
                 "download_link": "Pobierz PDF",
                 "download_label": "Pobieranie",
                 "valid_until": "Link wazny do",
+                "bibtex_note_text": (
+                    "W zalaczniku znajduje sie rowniez plik {bibtex_filename}. "
+                    "Mozna go zaimportowac do wielu programow do zarzadzania bibliografia."
+                ),
                 "closing_html": "Z powazaniem",
                 "closing_text": "Z powazaniem",
             },
