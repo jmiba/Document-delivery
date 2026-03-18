@@ -1,170 +1,370 @@
 # Document Delivery Pipeline
 
 Code-first starter for a university-library document delivery workflow:
-- FormCycle sends delivery requests to FastAPI.
+
+- FormCycle sends document-delivery requests to a FastAPI webhook.
 - FastAPI stores requests and requested items in SQLite.
-- A polling worker normalizes metadata, checks Zotero, processes uploaded or existing PDF attachments, and delivers finished PDFs through Nextcloud.
-- Streamlit provides the operator view for queue status, failures, and retries.
-- Delivery notifications are sent directly by SMTP from the app.
+- A worker normalizes metadata, checks Zotero, processes PDF attachments, uploads delivered files to Nextcloud, and sends notification email through SMTP.
+- Streamlit provides the operator UI for review, retries, uploads, templates, and statistics.
 
-## Stack
+## Services
 
-- FastAPI API service
-- Python worker
-- SQLite
-- Streamlit operator UI
+`docker compose` starts three containers from the same image:
 
-## Workflow
+- `api`: FastAPI on `http://localhost:18000`
+- `worker`: background processing worker
+- `streamlit`: operator UI on `http://localhost:18501`
 
-1. FormCycle posts a request with one or more bibliographic items.
-2. FastAPI persists the request in SQLite.
-3. The worker normalizes metadata through a multi-source resolver using Crossref and OpenAlex.
-4. Low-confidence normalization results are held in `NEEDS_REVIEW` until an operator approves or edits them in Streamlit.
-5. Once metadata is approved, the worker checks Zotero for an existing matching item.
-6. If no match exists, the worker creates a new Zotero item tagged `in process`.
-7. Staff can upload a scan directly in Streamlit for items in `WAITING_FOR_ATTACHMENT`. As a fallback, the worker can still poll Zotero for an existing PDF attachment.
-8. The worker optionally runs OCR through the native Tesseract overlay pass.
-9. If the scan came through the app, the worker uploads the processed PDF back to Zotero as the canonical attachment for later reuse.
-10. The worker prepends a delivery-only cover page with order date, delivery date, and bibliographic data, then uploads that delivered PDF to Nextcloud and creates an expiring share link.
-11. The worker sends the final requester email directly through SMTP when configured.
+Persistent data is stored in bind mounts:
 
-## Architecture
+- `./data/app` -> SQLite database and working files
+- `./data/scans` -> optional read-only drop folder for incoming PDFs
+- `./.streamlit` -> optional Streamlit auth configuration
 
-The active system has four roles:
+## Installation
 
-- FormCycle handles intake.
-- FastAPI ingests requests and exposes operator endpoints.
-- SQLite stores request state, item state, and job events.
-- The worker performs metadata resolution, Zotero coordination, OCR, Nextcloud delivery, and SMTP notification.
+### 1. Prerequisites
 
-The operator workflow is code-first:
+Install these on the host:
 
-- Streamlit is the review and retry interface.
-- metadata resolution combines Crossref, OpenAlex, and, for book-like items, Lobid and GBV/K10plus
-- delivery mails are sent directly by the app, not by an external low-code workflow
+- `git`
+- Docker Desktop or Docker Engine with Compose v2 (`docker compose version`)
 
-## Project layout
+You also need network access from the containers to the systems you configure in `.env`, typically:
 
-```text
-.
-├── docker-compose.yml
-├── .env.example
-├── docs/
-│   ├── architecture.md
-│   └── formcycle-forms.md
-└── services/
-    └── orchestrator/
-        ├── Dockerfile
-        ├── requirements.txt
-        └── app/
-            ├── clients.py
-            ├── config.py
-            ├── db.py
-            ├── jobs.py
-            ├── main.py
-            ├── models.py
-            ├── ocr.py
-            ├── schemas.py
-            ├── ui.py
-            └── worker.py
-```
+- Zotero Web API
+- Nextcloud WebDAV
+- SMTP submission server
+- OpenAlex and Crossref
+- optional clarification form endpoint
 
-## Quick start
-
-1. Prerequisites
-
-- Docker Engine
-- Docker Compose v2
-
-2. Create local data folders:
+### 2. Clone the repository
 
 ```bash
-mkdir -p data/scans data/app
+git clone https://github.com/jmiba/Document-delivery.git
+cd Document-delivery
 ```
 
-3. Copy env file:
+### 3. Create local bind-mount directories
+
+```bash
+mkdir -p data/app data/scans
+```
+
+`data/app` is required because it stores the SQLite database and temporary processing files. `data/scans` is optional at runtime, but creating it up front keeps the Docker mounts predictable.
+
+### 4. Create the configuration files
+
+Create the application config:
 
 ```bash
 cp .env.example .env
 ```
 
-4. Edit `.env`.
+If you want OIDC login in Streamlit, also create the auth secrets file:
 
-At minimum, set real values for:
-- `FORMCYCLE_WEBHOOK_SECRET`
-- `INTERNAL_API_TOKEN`
-- `CLARIFICATION_TOKEN_SECRET`
+```bash
+cp .streamlit/secrets.example.toml .streamlit/secrets.toml
+```
+
+If you do not want Streamlit login for local development, leave `.streamlit/secrets.toml` absent or incomplete. The UI will start without authentication.
+
+### 5. Edit `.env`
+
+Before starting the stack, replace every placeholder value in `.env`. The minimum values required for a working end-to-end deployment are:
+
 - `NEXTCLOUD_BASE_URL`
 - `NEXTCLOUD_USERNAME`
 - `NEXTCLOUD_PASSWORD`
 - `ZOTERO_LIBRARY_ID`
 - `ZOTERO_API_KEY`
+- `FORMCYCLE_WEBHOOK_SECRET`
+- `INTERNAL_API_TOKEN`
 - `SMTP_HOST`
-- `SMTP_USERNAME`
-- `SMTP_PASSWORD`
 - `SMTP_FROM_EMAIL`
 
-If you use the clarification flow, also set:
+For the clarification workflow, also set:
+
 - `CLARIFICATION_FORM_URL_TEMPLATE`
+- `CLARIFICATION_TOKEN_SECRET`
 
-5. If you want Streamlit authentication, create a secrets file:
+Details for every `.env` key are documented in [`.env configuration`](#env-configuration).
 
-```bash
-mkdir -p .streamlit
-cp .streamlit/secrets.example.toml .streamlit/secrets.toml
-```
-
-The Streamlit auth model is Streamlit's built-in OIDC login flow, not direct SAML. If your institution exposes only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it.
-
-If you do not want auth for local development, skip this step. Without a configured `.streamlit/secrets.toml`, the Streamlit UI starts without login.
-
-6. Start services:
+### 6. Start the stack with Docker
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
-The orchestrator image installs the OCR system dependencies itself:
+This builds `services/orchestrator/Dockerfile` once and starts:
+
+- `api`
+- `worker`
+- `streamlit`
+
+The image already installs:
+
 - `poppler-utils`
 - `tesseract-ocr`
-- Tesseract language packs from `OCR_TESSERACT_LANG_PACKS`
+- all Tesseract language packs listed in `OCR_TESSERACT_LANG_PACKS`
 
-So if you run the app with Docker Compose, you do not need to install Poppler or Tesseract on the host machine.
+If you use Docker Compose, you do not need Poppler or Tesseract on the host.
 
-7. Open the operator UI:
+### 7. Verify the installation
 
-```text
-http://localhost:18501
+Check container status:
+
+```bash
+docker compose ps
 ```
 
-8. Health check:
+Check API health:
 
 ```bash
 curl http://localhost:18000/health
 ```
 
-9. Common update workflow
+Open the operator UI:
 
-- normal config changes:
+```text
+http://localhost:18501
+```
+
+Tail logs when needed:
+
+```bash
+docker compose logs -f api worker streamlit
+```
+
+### 8. Stop or rebuild later
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+Restart without forcing a rebuild:
+
+```bash
+docker compose up -d
+```
+
+Rebuild after code changes or Docker build-arg changes:
 
 ```bash
 docker compose up -d --build
 ```
 
-- after changing `OCR_TESSERACT_LANG_PACKS`, rebuild is required because the language packs are installed into the image at build time:
+`OCR_TESSERACT_LANG_PACKS` is a Docker build argument, not a normal runtime setting. Any change to that variable requires `--build`.
+
+## Docker setup details
+
+The compose file is `docker-compose.yml`. It defines:
+
+- `api`
+  - runs `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+  - publishes host port `18000`
+  - reads environment from `.env`
+  - mounts `./data/scans` at `/scans` read-only
+  - mounts `./data/app` at `/app/data`
+- `worker`
+  - runs `python -m app.worker`
+  - reads environment from `.env`
+  - mounts the same `scans` and `app` volumes as `api`
+- `streamlit`
+  - runs `streamlit run app/ui.py --server.address 0.0.0.0 --server.port 8501`
+  - publishes host port `18501`
+  - reads environment from `.env`
+  - injects `API_BASE_URL=http://api:8000`
+  - mounts `./.streamlit` at `/app/.streamlit` read-only
+  - mounts `./data/app` at `/app/data`
+
+All three services are built from `services/orchestrator/Dockerfile`.
+
+## `.env` configuration
+
+The API and worker load settings from `.env` through Pydantic settings. Compose also passes `.env` into the Streamlit container. Variable names are case-insensitive in the application code.
+
+Important behavior:
+
+- If `FORMCYCLE_WEBHOOK_SECRET` is empty, the webhook endpoints accept requests without header authentication.
+- If `INTERNAL_API_TOKEN` is empty, the operator API endpoints accept requests without the `X-Internal-Token` header.
+- `NEXTCLOUD_BASE_URL`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_API_KEY` are required by the application settings model. If they are missing, `api` and `worker` will fail to start.
+- `SMTP_*` is optional only if you do not need delivery, clarification, or rejection emails. The workflow is incomplete without it.
+- `OCR_TESSERACT_LANG_PACKS` is consumed at Docker build time by Compose and the Dockerfile, not by the runtime settings model.
+
+### Core runtime
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | No | `sqlite:////app/data/delivery.sqlite3` | SQLAlchemy database URL. In Docker, this should normally stay on `/app/data` so the file persists in `./data/app`. |
+| `SCAN_INPUT_DIR` | No | `/scans` | Directory for manually dropped PDFs. In Compose this maps to `./data/scans`. |
+| `WORK_DIR` | No | `/app/data/work` | Scratch space for OCR, delivery assembly, and temporary files. |
+| `WORKER_POLL_INTERVAL_SECONDS` | No | `15` | How often the worker polls for normal queued work. |
+| `ATTACHMENT_POLL_INTERVAL_SECONDS` | No | `300` | How often the worker checks waiting items for external attachments. |
+| `NOTIFICATION_RETRY_INTERVAL_SECONDS` | No | `900` | Retry delay for notification work. |
+| `DEFAULT_LINK_EXPIRY_DAYS` | No | app default `14`; `.env.example` sets `7` | Lifetime of generated Nextcloud share links. |
+| `NORMALIZATION_AUTO_ACCEPT_THRESHOLD` | No | `0.92` | Confidence threshold above which metadata can bypass manual review. |
+
+### Metadata resolution
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `OPENALEX_EMAIL` | Recommended | empty | Contact email sent to OpenAlex. Improves API etiquette and traceability. |
+| `CROSSREF_MAILTO` | Recommended | empty | Contact email for Crossref queries. |
+| `GBV_SRU_URL` | No | `https://sru.k10plus.de/gvk` | K10plus/GBV SRU endpoint for book-like metadata lookups. |
+| `RESOLUTION_PRIORITY_LOBID` | No | `1` | Lower number means higher precedence when Lobid returns a valid match. |
+| `RESOLUTION_PRIORITY_GBV` | No | `2` | Precedence for GBV/K10plus results. |
+| `RESOLUTION_PRIORITY_CROSSREF` | No | `3` | Precedence for Crossref results. |
+| `RESOLUTION_PRIORITY_OPENALEX` | No | `4` | Precedence for OpenAlex results. |
+
+### Nextcloud delivery target
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `NEXTCLOUD_BASE_URL` | Yes | none | Base Nextcloud URL, for example `https://nextcloud.example.edu`. |
+| `NEXTCLOUD_USERNAME` | Yes | none | Account used for WebDAV upload and share creation. |
+| `NEXTCLOUD_PASSWORD` | Yes | none | Password or app password for the Nextcloud account. |
+| `NEXTCLOUD_DAV_BASE_PATH` | No | `/remote.php/dav/files/{username}` | WebDAV base path. `{username}` is expanded with `NEXTCLOUD_USERNAME`. |
+| `NEXTCLOUD_ROOT_PATH` | No | `/Digitization` in code; `.env.example` sets `/Document-Delivery` | Root folder inside Nextcloud where delivered files are stored. |
+
+### Zotero integration
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `ZOTERO_LIBRARY_TYPE` | No | `user` in code; `.env.example` sets `group` | Must be `user` or `group`. |
+| `ZOTERO_LIBRARY_ID` | Yes | none | Numeric Zotero user or group library ID. |
+| `ZOTERO_API_KEY` | Yes | none | Zotero API key with access to the configured library. |
+| `ZOTERO_COLLECTION_KEY` | No | empty | Optional collection to work in. Leave empty to use the library root. |
+| `ZOTERO_IN_PROCESS_TAG` | No | `in process` | Tag applied to records created by this pipeline before delivery is complete. |
+| `CITATION_STYLE` | No | `apa` | CSL style used when rendering citations in delivery mail. |
+| `CITATION_LOCALE_DE` | No | `de-DE` | Zotero locale used for German requests. |
+| `CITATION_LOCALE_EN` | No | `en-US` | Zotero locale used for English requests. |
+| `CITATION_LOCALE_PL` | No | `pl-PL` | Zotero locale used for Polish requests. |
+
+### Webhook and operator security
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `FORMCYCLE_WEBHOOK_SECRET` | Strongly recommended | empty | Expected value of the `X-Formcycle-Secret` header on webhook requests. Empty means no webhook authentication. |
+| `INTERNAL_API_TOKEN` | Strongly recommended | empty | Expected value of the `X-Internal-Token` header on operator API endpoints. Streamlit forwards this header when the variable is set. Empty means no operator API authentication. |
+| `CLARIFICATION_FORM_URL_TEMPLATE` | Required for clarification flow | empty | URL template used to build links to the external clarification form. |
+| `CLARIFICATION_TOKEN_SECRET` | Required for clarification flow | empty | Secret used to sign clarification links. If clarification is requested without it, the app raises a runtime error. |
+| `CLARIFICATION_TOKEN_TTL_HOURS` | No | `168` | Validity period for clarification links. |
+
+### SMTP delivery
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `SMTP_HOST` | Required for any email sending | empty | SMTP host used for delivery, clarification, and rejection mail. |
+| `SMTP_PORT` | No | `587` | SMTP port. |
+| `SMTP_USERNAME` | Usually yes | empty | Username for SMTP authentication. |
+| `SMTP_PASSWORD` | Usually yes | empty | Password for SMTP authentication. |
+| `SMTP_USE_TLS` | No | `true` | Enables STARTTLS. Typical setting for port `587`. |
+| `SMTP_USE_SSL` | No | `false` | Enables implicit TLS. Do not set both `SMTP_USE_TLS` and `SMTP_USE_SSL` to `true`. |
+| `SMTP_FROM_EMAIL` | Required when `SMTP_HOST` is set | empty | Sender address. The app raises an error if SMTP is enabled without this value. |
+| `SMTP_FROM_NAME` | No | `Bibliothek` in code; `.env.example` sets `Universitaetsbibliothek` | Display name in the From header. |
+| `SMTP_REPLY_TO` | No | empty | Optional Reply-To header. |
+
+### OCR and PDF processing
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `OCR_TESSERACT_LANG_PACKS` | No | Docker build arg default `eng deu pol`; `.env.example` sets a longer list | Space-separated language packs installed into the image during `docker compose build`. Rebuild required after changes. |
+| `OCR_MODE` | No | `off` in code; `.env.example` sets `tesseract_overlay` | OCR mode. `tesseract_overlay` adds a text layer to scanned PDFs. |
+| `OCR_LANGUAGE_MODE` | No | `manual` in code; `.env.example` sets `auto` | `auto` samples early pages and narrows the OCR language set; `manual` always uses `OCR_LANGUAGE`. |
+| `OCR_LANGUAGE` | No | `deu+eng+pol` | Runtime fallback Tesseract language bundle. |
+| `OCR_LANGUAGE_DETECT_SEED` | No | `eng+deu+pol+fra` | Initial broad language bundle used during automatic detection. |
+| `OCR_LANGUAGE_DETECT_PAGES` | No | `2` | Number of leading pages sampled for language detection. |
+| `OCR_DPI` | No | `300` | Rasterization DPI before OCR. |
+| `OCR_POPPLER_PATH` | No | empty | Override path to Poppler binaries when not running inside Docker. |
+| `OCR_TESSERACT_CMD` | No | empty | Override path to the `tesseract` executable when not running inside Docker. |
+| `OCR_SKIP_IF_TEXT_LAYER` | No | `true` | Skip OCR if the existing text layer appears usable. |
+| `OCR_TEXT_LAYER_MIN_CHARS_PER_PAGE` | No | `80` | Minimum average characters per page for the existing text layer heuristic. |
+| `OCR_TEXT_LAYER_MIN_PAGE_RATIO` | No | `0.5` | Minimum fraction of pages that must contain usable text. |
+| `OCR_TEXT_LAYER_MIN_ALPHA_RATIO` | No | `0.6` | Minimum alphabetic-character ratio used by the text-layer heuristic. |
+
+### Example `.env` workflow
+
+The intended workflow is:
 
 ```bash
-docker compose up -d --build
+cp .env.example .env
 ```
 
-## FormCycle webhook payload example
+Then edit `.env` and replace all placeholders:
 
-This is the preferred shape for new FormCycle requests:
+- every `change-me`
+- every example hostname such as `nextcloud.example.edu`
+- every example email address such as `library@example.edu`
+- every placeholder library ID
+
+Do not commit the filled `.env` file.
+
+## `.streamlit/secrets.toml` configuration
+
+The repository does not use a root-level `secrets.toml`. The only supported file is:
+
+- `.streamlit/secrets.toml`
+
+This file is mounted only into the `streamlit` container. The API and worker do not read it.
+
+### When you need it
+
+Use `.streamlit/secrets.toml` only if you want OIDC login in the Streamlit operator UI.
+
+If the file is missing, or if `[auth]` does not contain both `redirect_uri` and `cookie_secret`, the UI runs without login.
+
+### File structure
+
+Start from the example:
+
+```bash
+cp .streamlit/secrets.example.toml .streamlit/secrets.toml
+```
+
+Example:
+
+```toml
+[auth]
+redirect_uri = "http://localhost:18501/oauth2callback"
+cookie_secret = "replace-with-a-long-random-secret"
+provider = "authentik"
+
+[auth.authentik]
+client_id = "replace-with-client-id"
+client_secret = "replace-with-client-secret"
+server_metadata_url = "https://auth.example.edu/application/o/document-delivery/.well-known/openid-configuration"
+client_kwargs = { prompt = "login" }
+```
+
+### Meaning of each key
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `[auth]` | Yes for auth | Top-level Streamlit auth section. |
+| `redirect_uri` | Yes for auth | OIDC callback URL registered with the identity provider. For local Compose, this is normally `http://localhost:18501/oauth2callback`. |
+| `cookie_secret` | Yes for auth | Long random secret used by Streamlit to sign auth cookies. |
+| `provider` | Optional | Provider name passed by this app to `st.login(provider)`. If omitted, the app calls `st.login()` without a named provider. |
+| `[auth.<provider>]` | Yes for the named provider | Provider-specific OIDC config section. The section name must match `provider`. |
+| `client_id` | Yes for auth | OIDC client ID. |
+| `client_secret` | Yes for auth | OIDC client secret. |
+| `server_metadata_url` | Yes for auth | OIDC discovery document URL (`.well-known/openid-configuration`). |
+| `client_kwargs` | Optional | Extra OIDC client parameters understood by Streamlit or the underlying auth stack. |
+
+If your institution offers only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it and configure Streamlit against that broker.
+
+Do not commit the filled `.streamlit/secrets.toml` file.
+
+## Request webhook example
+
+The preferred FormCycle request payload is:
 
 ```bash
 curl -X POST http://localhost:18000/webhooks/formcycle/requests \
   -H "Content-Type: application/json" \
-  -H "X-Formcycle-Secret: change-me" \
+  -H "X-Formcycle-Secret: <FORMCYCLE_WEBHOOK_SECRET>" \
   -d '{
     "request_id": "DD-2026-0001",
     "formcycle_submission_id": "12345",
@@ -191,102 +391,56 @@ curl -X POST http://localhost:18000/webhooks/formcycle/requests \
   }'
 ```
 
-The API also accepts the older single-item shape with top-level `bibliographic_data`.
-If FormCycle posts repeated items one by one with the same `request_id`, the app appends those items to the existing request instead of discarding them.
+The API also accepts the older single-item shape with top-level `bibliographic_data`. Repeated webhook calls with the same `request_id` append items to the existing request.
 
-## SQLite state model
+## Runtime notes
 
-The database has three runtime tables:
-- `delivery_requests`
-- `request_items`
-- `job_events`
-
-Important item statuses:
-- `PENDING_METADATA`
-- `NEEDS_REVIEW`
-- `AWAITING_USER`
-- `PENDING_ZOTERO`
-- `WAITING_FOR_ATTACHMENT`
-- `PROCESSING_PDF`
-- `READY_TO_NOTIFY`
-- `DELIVERED`
-- `FAILED`
-
-## Configuration notes
-
-- `DATABASE_URL` defaults to `sqlite:////app/data/delivery.sqlite3`.
-- `SCAN_INPUT_DIR` is the bind-mounted input directory for manually provided scans. The preferred operator flow is now upload through Streamlit, not dropping files here.
-- `WORK_DIR` stores temporary OCR, delivery, and upload working files.
-- `OPENALEX_EMAIL` enables OpenAlex as a normalization source.
-- `CROSSREF_MAILTO` is optional but recommended for polite Crossref API usage.
-- `GBV_SRU_URL` configures the K10plus/GBV SRU endpoint used for book and book-section lookups.
-- `RESOLUTION_PRIORITY_LOBID`, `RESOLUTION_PRIORITY_GBV`, `RESOLUTION_PRIORITY_CROSSREF`, and `RESOLUTION_PRIORITY_OPENALEX` control which validated source wins when multiple sources match. For `bookSection`, Lobid and GBV are evaluated ahead of Crossref/OpenAlex by default.
-- `NORMALIZATION_AUTO_ACCEPT_THRESHOLD` controls when a metadata match can bypass human review.
-- `ZOTERO_COLLECTION_KEY` is optional. Leave it empty to work in the Zotero library root.
-- Items in `WAITING_FOR_ATTACHMENT` can now take a PDF upload in the Streamlit UI. The app stores the uploaded scan locally, OCRs it if needed, pushes the processed PDF back to Zotero, and then continues delivery.
-- Uploaded scans are visible in the item table as `App upload: <filename>`. Operators can replace or remove an uploaded scan before delivery if needed.
-- Delivered PDFs include a generated front page with current delivery metadata. The canonical Zotero attachment remains unchanged apart from optional OCR applied during initial app-upload processing.
-- `CITATION_STYLE` controls the CSL style Zotero uses when the app renders bibliography entries for the delivery mail.
-- `CITATION_LOCALE_DE`, `CITATION_LOCALE_EN`, and `CITATION_LOCALE_PL` map the FormCycle form language to the Zotero citation locale.
-- `SMTP_HOST` enables direct email delivery from the app.
-- `SMTP_FROM_EMAIL` is required when SMTP is enabled.
-- `CLARIFICATION_FORM_URL_TEMPLATE` configures the user-facing clarification form link the app sends when an operator requests clarification.
-- `CLARIFICATION_TOKEN_SECRET` signs clarification links so users can only answer for the intended request item.
-- `CLARIFICATION_TOKEN_TTL_HOURS` controls how long a clarification link remains valid.
-- `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
-- If you use Exchange or a university SMTP submission server, `SMTP_USE_TLS=true` with `SMTP_PORT=587` is usually the correct setup. Do not enable `SMTP_USE_TLS` and `SMTP_USE_SSL` at the same time.
-- Streamlit authentication is configured through `.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
-- Streamlit light/dark colors are defined in `.streamlit/config.toml`.
-- Delivery and clarification templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page.
-- The Streamlit `Statistics` page aggregates request cohorts by month or year and shows request volume, fulfillment rate, average fulfillment time, metadata validation outcomes, clarification requests, and Zotero item reuse.
-- `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
-- `OCR_MODE=tesseract_overlay` enables the built-in Tesseract text-layer pass.
-- `OCR_LANGUAGE_MODE=auto` samples a few pages, detects the primary language, and switches to a narrower OCR bundle for the full overlay pass.
-- `OCR_LANGUAGE` controls the runtime fallback OCR language set, for example `deu+eng+pol`.
-- `OCR_LANGUAGE_DETECT_SEED` controls the broader seed bundle used for the detection pass.
-- `OCR_LANGUAGE_DETECT_PAGES` controls how many leading pages are sampled for language detection.
-- `OCR_DPI` controls PDF rasterization resolution before OCR.
-- `OCR_POPPLER_PATH` and `OCR_TESSERACT_CMD` are only needed if you run the worker outside Docker and the binaries are not on `PATH`.
-- `OCR_SKIP_IF_TEXT_LAYER=true` skips OCR when the existing PDF text layer looks usable by heuristic checks.
-- `OCR_TEXT_LAYER_MIN_CHARS_PER_PAGE`, `OCR_TEXT_LAYER_MIN_PAGE_RATIO`, and `OCR_TEXT_LAYER_MIN_ALPHA_RATIO` tune that heuristic.
-- `INTERNAL_API_TOKEN` protects the Streamlit/API operator endpoints.
-- When your FormCycle request form is multilingual, include the active language in the webhook payload, for example `"language": "[%lang%]"`, so the delivery mail and Zotero citation locale match the form language.
+- Item statuses include `PENDING_METADATA`, `NEEDS_REVIEW`, `AWAITING_USER`, `PENDING_ZOTERO`, `WAITING_FOR_ATTACHMENT`, `PROCESSING_PDF`, `READY_TO_NOTIFY`, `DELIVERED`, and `FAILED`.
+- Uploaded PDFs through Streamlit are stored locally first, then OCR-processed if configured, then pushed back to Zotero as the canonical attachment.
+- Delivered PDFs get a generated front page before being uploaded to Nextcloud.
+- Delivery, clarification, and rejection templates are stored in SQLite and editable from Streamlit.
+- The `Statistics` page aggregates monthly or yearly request cohorts.
 
 ## Clarification flow
 
-- Operators can request clarification from the Streamlit review screen for items in `NEEDS_REVIEW`.
-- The app sends the clarification email itself via SMTP and marks the item as `AWAITING_USER`.
-- The clarification link should point to a separate FormCycle form that posts back to `POST /webhooks/formcycle/clarifications`.
-- The clarification link template can prefill the form with the current item metadata. A working minimal template is:
+- Operators can request clarification for items in `NEEDS_REVIEW`.
+- The app sends the clarification email through SMTP and changes the item status to `AWAITING_USER`.
+- The clarification link must point to an external form that posts back to `POST /webhooks/formcycle/clarifications`.
+
+Minimal clarification URL template:
 
 ```env
 CLARIFICATION_FORM_URL_TEMPLATE=https://forms.example.edu/form/provide/3104/?request_id={request_id_q}&item_id={item_id_q}&token={token_q}&operator_message={operator_message_q}&item_type={item_type_q}&author={author_q}&workTitle={title_q}&container_title={container_title_q}&issued={issued_q}&volume={volume_q}&issue={issue_q}&page={page_q}
 ```
 
-- Supported placeholders are:
-  - `{request_id}`, `{request_id_q}`
-  - `{item_id}`, `{item_id_q}`
-  - `{token}`, `{token_q}`
-  - `{operator_message}`, `{operator_message_q}`
-  - `{item_type}`, `{item_type_q}`
-  - `{author}`, `{author_q}`
-  - `{title}`, `{title_q}`
-  - `{container_title}`, `{container_title_q}`
-  - `{issued}`, `{issued_q}`
-  - `{volume}`, `{volume_q}`
-  - `{issue}`, `{issue_q}`
-  - `{page}`, `{page_q}`
-  - `{DOI}`, `{DOI_q}`
-  - `{publisher}`, `{publisher_q}`
-  - `{place}`, `{place_q}`
-  - `{series}`, `{series_q}`
-  - `{edition}`, `{edition_q}`
-  - `{isbn}`, `{isbn_q}`
-- The clarification payload must include:
-  - `request_id`
-  - `item_id`
-  - `token`
-  - corrected bibliographic fields
-  - optional `user_note`
-  - optional `operator_message`
-- After clarification is received, the corrected fields are written back to the item and the item is returned to `PENDING_METADATA` so the resolver pipeline validates the clarified data again.
+Supported placeholders:
+
+- `{request_id}`, `{request_id_q}`
+- `{item_id}`, `{item_id_q}`
+- `{token}`, `{token_q}`
+- `{operator_message}`, `{operator_message_q}`
+- `{item_type}`, `{item_type_q}`
+- `{author}`, `{author_q}`
+- `{title}`, `{title_q}`
+- `{container_title}`, `{container_title_q}`
+- `{issued}`, `{issued_q}`
+- `{volume}`, `{volume_q}`
+- `{issue}`, `{issue_q}`
+- `{page}`, `{page_q}`
+- `{DOI}`, `{DOI_q}`
+- `{publisher}`, `{publisher_q}`
+- `{place}`, `{place_q}`
+- `{series}`, `{series_q}`
+- `{edition}`, `{edition_q}`
+- `{isbn}`, `{isbn_q}`
+
+The clarification form payload must include:
+
+- `request_id`
+- `item_id`
+- `token`
+- corrected bibliographic fields
+- optional `user_note`
+- optional `operator_message`
+
+After clarification is received, the corrected fields are written back to the item and the item returns to `PENDING_METADATA` for validation.

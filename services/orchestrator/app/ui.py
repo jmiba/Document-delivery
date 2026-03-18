@@ -861,7 +861,10 @@ def _render_statistics_page() -> None:
 
     total_requests = sum(row["request_count"] for row in stats)
     total_fulfilled = sum(row["fulfilled_requests"] for row in stats)
+    total_rejected_requests = sum(row["rejected_requests"] for row in stats)
+    total_rejected_items = sum(row["rejected_items"] for row in stats)
     fulfillment_rate = (total_fulfilled / total_requests) if total_requests else 0.0
+    rejection_rate = (total_rejected_requests / total_requests) if total_requests else 0.0
     weighted_duration_hours = sum(
         (row["avg_fulfillment_hours"] or 0.0) * row["fulfilled_requests"] for row in stats
     )
@@ -870,16 +873,19 @@ def _render_statistics_page() -> None:
     total_clarifications = sum(row["clarification_requests"] for row in stats)
     total_reused = sum(row["reused_items"] for row in stats)
 
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("Requests", total_requests)
     metrics[1].metric("Fulfillment rate", f"{fulfillment_rate * 100:.1f}%")
-    metrics[2].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
-    metrics[3].metric("Invalid metadata", total_invalid_metadata)
-    metrics[4].metric("Reused items", total_reused)
+    metrics[2].metric("Rejection rate", f"{rejection_rate * 100:.1f}%")
+    metrics[3].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
+    metrics[4].metric("Invalid metadata", total_invalid_metadata)
+    metrics[5].metric("Reused items", total_reused)
 
     st.caption(
         f"Clarification requests in selected periods: {total_clarifications} | "
-        f"Valid metadata items: {sum(row['valid_metadata_items'] for row in stats)}"
+        f"Valid metadata items: {sum(row['valid_metadata_items'] for row in stats)} | "
+        f"Rejected requests: {total_rejected_requests} | "
+        f"Rejected items: {total_rejected_items}"
     )
 
     table_rows = [
@@ -887,7 +893,10 @@ def _render_statistics_page() -> None:
             "period": row["period_label"],
             "requests": row["request_count"],
             "fulfilled": row["fulfilled_requests"],
+            "rejected_requests": row["rejected_requests"],
+            "rejected_items": row["rejected_items"],
             "fulfillment_rate_pct": round(row["fulfillment_rate"] * 100, 1),
+            "rejection_rate_pct": round(row["rejection_rate"] * 100, 1),
             "avg_fulfillment_hours": row["avg_fulfillment_hours"],
             "valid_metadata_items": row["valid_metadata_items"],
             "invalid_metadata_items": row["invalid_metadata_items"],
@@ -904,6 +913,14 @@ def _render_statistics_page() -> None:
     with chart_col2:
         _render_line_chart(table_rows, "period", "fulfillment_rate_pct", "Fulfillment Rate (%)", "#4c7a6f")
 
+    outcome_rows = []
+    for row in table_rows:
+        outcome_rows.extend(
+            [
+                {"period": row["period"], "series": "Fulfilled requests", "value": row["fulfilled"]},
+                {"period": row["period"], "series": "Rejected requests", "value": row["rejected_requests"]},
+            ]
+        )
     metadata_rows = []
     for row in table_rows:
         metadata_rows.extend(
@@ -916,6 +933,15 @@ def _render_statistics_page() -> None:
     secondary_chart_col1, secondary_chart_col2 = st.columns(2)
     with secondary_chart_col1:
         _render_grouped_bar_chart(
+            outcome_rows,
+            "Request Outcomes",
+            color_scale={
+                "Fulfilled requests": "#4c7a6f",
+                "Rejected requests": "#9b2c2c",
+            },
+        )
+    with secondary_chart_col2:
+        _render_grouped_bar_chart(
             metadata_rows,
             "Metadata Outcomes",
             color_scale={
@@ -924,8 +950,11 @@ def _render_statistics_page() -> None:
                 "Clarifications": "#D4A017",
             },
         )
-    with secondary_chart_col2:
+    tertiary_chart_col1, tertiary_chart_col2 = st.columns(2)
+    with tertiary_chart_col1:
         _render_bar_chart(table_rows, "period", "reused_items", "Reused Zotero Items", "#7b5ea7")
+    with tertiary_chart_col2:
+        _render_bar_chart(table_rows, "period", "rejected_items", "Rejected Items", "#9b2c2c")
 
     st.subheader("Table")
     st.dataframe(table_rows, use_container_width=True, hide_index=True)

@@ -263,7 +263,10 @@ class PeriodStatisticsSummary(BaseModel):
     period_label: str
     request_count: int
     fulfilled_requests: int
+    rejected_requests: int
+    rejected_items: int
     fulfillment_rate: float
+    rejection_rate: float
     avg_fulfillment_hours: float | None
     valid_metadata_items: int
     invalid_metadata_items: int

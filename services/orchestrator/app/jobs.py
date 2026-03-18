@@ -182,6 +182,8 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
         start: {
             "request_count": 0,
             "fulfilled_requests": 0,
+            "rejected_requests": set(),
+            "rejected_items": set(),
             "fulfillment_hours_total": 0.0,
             "valid_metadata_items": set(),
             "invalid_metadata_items": set(),
@@ -227,6 +229,12 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
                 0.0,
                 (request.notification_sent_at - request.created_at).total_seconds() / 3600,
             )
+        if request.status == "REJECTED":
+            bucket["rejected_requests"].add(request.request_id)
+        rejected_item_ids = {item.id for item in request.items if item.status == "REJECTED"}
+        bucket["rejected_items"].update(rejected_item_ids)
+        if rejected_item_ids:
+            bucket["rejected_requests"].add(request.request_id)
 
         for event in events_by_request.get(request.request_id, []):
             payload = _parse_event_payload(event.payload_json)
@@ -240,19 +248,26 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
                 bucket["clarification_requests"].add(item_key)
             elif event.event_type == "zotero_existing_item_matched" and item_key is not None:
                 bucket["reused_items"].add(item_key)
+            elif event.event_type == "item_rejected" and item_key is not None:
+                bucket["rejected_items"].add(item_key)
+                bucket["rejected_requests"].add(request.request_id)
 
     summaries: list[PeriodStatisticsSummary] = []
     for start in period_starts:
         bucket = stats_map[start]
         request_count = bucket["request_count"]
         fulfilled_requests = bucket["fulfilled_requests"]
+        rejected_requests = len(bucket["rejected_requests"])
         summaries.append(
             PeriodStatisticsSummary(
                 period_start=start,
                 period_label=_period_label(start, normalized_granularity),
                 request_count=request_count,
                 fulfilled_requests=fulfilled_requests,
+                rejected_requests=rejected_requests,
+                rejected_items=len(bucket["rejected_items"]),
                 fulfillment_rate=(fulfilled_requests / request_count) if request_count else 0.0,
+                rejection_rate=(rejected_requests / request_count) if request_count else 0.0,
                 avg_fulfillment_hours=(
                     round(bucket["fulfillment_hours_total"] / fulfilled_requests, 2)
                     if fulfilled_requests
