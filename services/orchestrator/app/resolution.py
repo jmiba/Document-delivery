@@ -295,9 +295,30 @@ def _make_bib(
     edition: str | None = None,
     isbn: str | None = None,
     abstract_note: str | None = None,
+    sparse: bool = False,
 ) -> BibliographicData:
     item_type = fallback.item_type
     resolved_issue = issue if item_type == "journalArticle" else None
+    if sparse:
+        return BibliographicData(
+            item_type=item_type,
+            title=title or "",
+            creators=creators or [],
+            editors=editors or [],
+            publication_title=publication_title or "",
+            year=year or "",
+            volume=volume,
+            issue=resolved_issue,
+            pages=pages,
+            doi=_normalize_doi(doi) or None,
+            publisher=publisher,
+            place=place,
+            series=series,
+            edition=edition,
+            isbn=isbn,
+            language=None,
+            abstract_note=abstract_note,
+        )
     return BibliographicData(
         item_type=item_type,
         title=title or fallback.title,
@@ -363,6 +384,10 @@ def _apply_candidate(
     if original.item_type != "journalArticle":
         data["issue"] = None
     return BibliographicData(**data)
+
+
+def _validation_sort_key(priorities: dict[str, int], match: ResolutionMatch) -> tuple[float, int]:
+    return (-match.score, priorities.get(match.source, 100))
 
 
 def _allow_author_overwrite(original: BibliographicData, match: ResolutionMatch) -> bool:
@@ -483,6 +508,7 @@ class CrossrefResolver:
                 doi=_clean(item.get("DOI")) or None,
                 publisher=_clean(item.get("publisher")) or None,
                 place=_clean(item.get("publisher-location")) or None,
+                sparse=True,
             )
             return ResolutionMatch(
                 "crossref",
@@ -508,6 +534,7 @@ class CrossrefResolver:
                 doi=_clean(item.get("DOI")) or None,
                 publisher=_clean(item.get("publisher")) or None,
                 place=_clean(item.get("publisher-location")) or None,
+                sparse=True,
             )
             return ResolutionMatch(
                 "crossref",
@@ -559,6 +586,7 @@ class CrossrefResolver:
                 series=_clean(resolved_series) or None,
                 edition=_clean(item.get("edition")) or _clean(item.get("edition-number")) or None,
                 isbn=_clean(resolved_isbn) or None,
+                sparse=True,
             )
             return ResolutionMatch(
                 "crossref",
@@ -585,6 +613,7 @@ class CrossrefResolver:
             publisher=_clean(item.get("publisher")) or None,
             place=_clean(item.get("publisher-location")) or None,
             series=resolved_series or None,
+            sparse=True,
         )
         return ResolutionMatch(
             "crossref",
@@ -677,6 +706,7 @@ class OpenAlexResolver:
                 volume=_clean((work.get("biblio") or {}).get("volume")) or None,
                 issue=_clean((work.get("biblio") or {}).get("issue")) or None,
                 doi=work.get("doi"),
+                sparse=True,
             )
             return ResolutionMatch(
                 "openalex",
@@ -698,6 +728,7 @@ class OpenAlexResolver:
                 volume=_clean((work.get("biblio") or {}).get("volume")) or None,
                 issue=_clean((work.get("biblio") or {}).get("issue")) or None,
                 doi=work.get("doi"),
+                sparse=True,
             )
             return ResolutionMatch(
                 "openalex",
@@ -742,6 +773,7 @@ class OpenAlexResolver:
                 pages=pages or None,
                 doi=work.get("doi"),
                 isbn=_clean(ids.get("isbn")) or None,
+                sparse=True,
             )
             return ResolutionMatch(
                 "openalex",
@@ -772,6 +804,7 @@ class OpenAlexResolver:
             or None,
             doi=work.get("doi"),
             isbn=_clean((work.get("ids") or {}).get("isbn")) or None,
+            sparse=True,
         )
         return ResolutionMatch(
             "openalex",
@@ -857,6 +890,7 @@ class LobidResolver:
                 series=series or None,
                 edition=edition or None,
                 isbn=isbn or None,
+                sparse=True,
             )
         else:
             candidate = _make_bib(
@@ -868,6 +902,7 @@ class LobidResolver:
                 series=series or None,
                 edition=edition or None,
                 isbn=isbn or None,
+                sparse=True,
             )
 
         return ResolutionMatch(
@@ -949,6 +984,7 @@ class GbVResolver:
                 year=candidate_year or None,
                 publisher=publisher,
                 isbn=isbn or None,
+                sparse=True,
             )
         else:
             candidate = _make_bib(
@@ -957,6 +993,7 @@ class GbVResolver:
                 year=candidate_year or None,
                 publisher=publisher,
                 isbn=isbn or None,
+                sparse=True,
             )
 
         return ResolutionMatch(
@@ -1000,7 +1037,7 @@ class ResolutionService:
         ]
         validated = [match for match in matches if match.status == "validated" and match.candidate is not None]
         if validated:
-            validated.sort(key=lambda match: (self.priorities.get(match.source, 100), -match.score))
+            validated.sort(key=lambda match: _validation_sort_key(self.priorities, match))
             best = validated[0]
             overwrite = best.score >= 0.95
             overwrite_authors = _allow_author_overwrite(bib, best)
@@ -1010,6 +1047,15 @@ class ResolutionService:
                 overwrite=overwrite,
                 overwrite_authors=overwrite_authors,
             )
+            for match in validated[1:]:
+                if not match.candidate:
+                    continue
+                normalized_bib = _apply_candidate(
+                    normalized_bib,
+                    match.candidate,
+                    overwrite=False,
+                    overwrite_authors=_allow_author_overwrite(normalized_bib, match),
+                )
             author_match = _best_author_enrichment_match(bib, matches)
             if (
                 author_match
@@ -1019,7 +1065,7 @@ class ResolutionService:
             ):
                 normalized_bib = _apply_candidate(
                     normalized_bib,
-                    _make_bib(normalized_bib, creators=author_match.candidate.creators),
+                    _make_bib(normalized_bib, creators=author_match.candidate.creators, sparse=True),
                     overwrite=False,
                     overwrite_authors=True,
                 )
