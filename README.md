@@ -393,13 +393,42 @@ curl -X POST http://localhost:18000/webhooks/formcycle/requests \
 
 The API also accepts the older single-item shape with top-level `bibliographic_data`. Repeated webhook calls with the same `request_id` append items to the existing request.
 
+## Example FormCycle exports
+
+Redacted FormCycle exports can be kept in the repository as example material for local adaptation. The current example set consists of:
+
+- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-form.json`
+  - request form definition for end users
+- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-workflow.json`
+  - request workflow that posts incoming items to `POST /webhooks/formcycle/requests`
+- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-form.json`
+  - clarification form definition used when an operator needs corrected metadata from the user
+- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-workflow.json`
+  - clarification workflow that posts corrected data to `POST /webhooks/formcycle/clarifications`
+
+When publishing these files:
+
+- redact live email addresses
+- redact live webhook secrets
+- replace institution-specific URLs with example domains
+- keep field names and payload shapes unchanged so the examples still match the app
+
+Before importing the examples into a real FormCycle instance, replace the redacted values with your environment-specific values:
+
+- webhook URLs
+- `X-Formcycle-Secret`
+- operator notification recipients
+- operator UI base URL
+
+The example exports are intended as working reference configurations, not drop-in production files.
+
 ## Runtime notes
 
 - Item statuses include `PENDING_METADATA`, `NEEDS_REVIEW`, `AWAITING_USER`, `PENDING_ZOTERO`, `WAITING_FOR_ATTACHMENT`, `PROCESSING_PDF`, `READY_TO_NOTIFY`, `DELIVERED`, and `FAILED`.
 - Uploaded PDFs through Streamlit are stored locally first, then OCR-processed if configured, then pushed back to Zotero as the canonical attachment.
 - Delivered PDFs get a generated front page before being uploaded to Nextcloud.
 - Delivery, clarification, and rejection templates are stored in SQLite and editable from Streamlit.
-- The `Statistics` page aggregates monthly or yearly request cohorts.
+- The `Statistics` page aggregates daily, weekly, monthly, or yearly request cohorts.
 
 ## Clarification flow
 
