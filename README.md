@@ -395,32 +395,34 @@ The API also accepts the older single-item shape with top-level `bibliographic_d
 
 ## Example FormCycle exports
 
-Redacted FormCycle exports can be kept in the repository as example material for local adaptation. The current example set consists of:
+The repository contains reusable FormCycle template exports in `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/`.
+
+Provided files:
 
 - `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-form.json`
-  - request form definition for end users
+  - end-user request form
 - `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-workflow.json`
-  - request workflow that posts incoming items to `POST /webhooks/formcycle/requests`
+  - request workflow that posts submitted items to `POST /webhooks/formcycle/requests`
 - `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-form.json`
-  - clarification form definition used when an operator needs corrected metadata from the user
+  - clarification form used when the operator asks the user to correct or complete metadata
 - `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-workflow.json`
   - clarification workflow that posts corrected data to `POST /webhooks/formcycle/clarifications`
 
-When publishing these files:
+These files are meant as importable templates for a new FormCycle setup. They preserve the field names, workflow parameters, and payload structure expected by this app.
 
-- redact live email addresses
-- redact live webhook secrets
-- replace institution-specific URLs with example domains
-- keep field names and payload shapes unchanged so the examples still match the app
-
-Before importing the examples into a real FormCycle instance, replace the redacted values with your environment-specific values:
+Before importing them into your own FormCycle instance, adjust the environment-specific values:
 
 - webhook URLs
 - `X-Formcycle-Secret`
 - operator notification recipients
 - operator UI base URL
 
-The example exports are intended as working reference configurations, not drop-in production files.
+The templates are a working starting point, not a complete production configuration. You should still review:
+
+- language texts and institutional wording
+- recipient addresses
+- status transitions
+- authentication and access rules inside FormCycle
 
 ## Runtime notes
 
