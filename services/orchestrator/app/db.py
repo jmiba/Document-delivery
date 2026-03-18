@@ -101,6 +101,66 @@ def _seed_clarification_templates() -> None:
     from app.models import ClarificationTemplate
     from app.templates import DEFAULT_CLARIFICATION_TEMPLATES, sanitize_template_placeholders
 
+    legacy_defaults = {
+        "de": {
+            "subject_template": "Rueckfrage zu Ihrer Dokumentlieferung ({request_id})",
+            "body_text_template": (
+                "Guten Tag {greeting_name},\n\n"
+                "wir konnten die angeforderte Literaturangabe noch nicht eindeutig verifizieren.\n\n"
+                "{operator_message}\n\n"
+                "Bitte verwenden Sie dieses Formular:\n"
+                "{clarification_url}\n\n"
+                "Mit freundlichen Grüßen\n"
+                "{sender_name}"
+            ),
+            "body_html_template": (
+                "<p>Guten Tag {greeting_name},</p>"
+                "<p>wir konnten die angeforderte Literaturangabe noch nicht eindeutig verifizieren.</p>"
+                "<p>{operator_message_html}</p>"
+                '<p>Bitte verwenden Sie dieses Formular:<br><a href="{clarification_url}">{clarification_url}</a></p>'
+                "<p>Mit freundlichen Grüßen<br>{sender_name}</p>"
+            ),
+        },
+        "en": {
+            "subject_template": "Question about your document delivery request ({request_id})",
+            "body_text_template": (
+                "Hello {greeting_name},\n\n"
+                "we could not yet verify the requested citation unambiguously.\n\n"
+                "{operator_message}\n\n"
+                "Please use this form:\n"
+                "{clarification_url}\n\n"
+                "Kind regards\n"
+                "{sender_name}"
+            ),
+            "body_html_template": (
+                "<p>Hello {greeting_name},</p>"
+                "<p>we could not yet verify the requested citation unambiguously.</p>"
+                "<p>{operator_message_html}</p>"
+                '<p>Please use this form:<br><a href="{clarification_url}">{clarification_url}</a></p>'
+                "<p>Kind regards<br>{sender_name}</p>"
+            ),
+        },
+        "pl": {
+            "subject_template": "Pytanie dotyczace zamowienia dokumentu ({request_id})",
+            "body_text_template": (
+                "Dzien dobry {greeting_name},\n\n"
+                "nie udalo nam sie jeszcze jednoznacznie potwierdzic zamowionego opisu bibliograficznego.\n\n"
+                "{operator_message}\n\n"
+                "Prosze skorzystac z tego formularza:\n"
+                "{clarification_url}\n\n"
+                "Z powazaniem\n"
+                "{sender_name}"
+            ),
+            "body_html_template": (
+                "<p>Dzien dobry {greeting_name},</p>"
+                "<p>nie udalo nam sie jeszcze jednoznacznie potwierdzic zamowionego opisu bibliograficznego.</p>"
+                "<p>{operator_message_html}</p>"
+                '<p>Prosze skorzystac z tego formularza:<br><a href="{clarification_url}">{clarification_url}</a></p>'
+                "<p>Z powazaniem<br>{sender_name}</p>"
+            ),
+        },
+    }
+
     with SessionLocal() as session:
         for language, template in DEFAULT_CLARIFICATION_TEMPLATES.items():
             existing = (
@@ -109,9 +169,19 @@ def _seed_clarification_templates() -> None:
                 .one_or_none()
             )
             if existing:
-                existing.subject_template = sanitize_template_placeholders(existing.subject_template)
-                existing.body_text_template = sanitize_template_placeholders(existing.body_text_template)
-                existing.body_html_template = sanitize_template_placeholders(existing.body_html_template)
+                legacy = legacy_defaults.get(language, {})
+                if existing.subject_template == legacy.get("subject_template"):
+                    existing.subject_template = sanitize_template_placeholders(template["subject_template"])
+                else:
+                    existing.subject_template = sanitize_template_placeholders(existing.subject_template)
+                if existing.body_text_template == legacy.get("body_text_template"):
+                    existing.body_text_template = sanitize_template_placeholders(template["body_text_template"])
+                else:
+                    existing.body_text_template = sanitize_template_placeholders(existing.body_text_template)
+                if existing.body_html_template == legacy.get("body_html_template"):
+                    existing.body_html_template = sanitize_template_placeholders(template["body_html_template"])
+                else:
+                    existing.body_html_template = sanitize_template_placeholders(existing.body_html_template)
                 continue
             session.add(
                 ClarificationTemplate(

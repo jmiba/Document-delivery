@@ -68,21 +68,20 @@ DEFAULT_EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
 
 DEFAULT_CLARIFICATION_TEMPLATES: dict[str, dict[str, str]] = {
     "de": {
-        "subject_template": "Rueckfrage zu Ihrer Dokumentlieferung ({request_id})",
+        "subject_template": "Rückfrage zu Ihrer Dokumentlieferung ({request_id})",
         "body_text_template": (
             "Guten Tag {greeting_name},\n\n"
-            "wir konnten die angeforderte Literaturangabe noch nicht eindeutig verifizieren.\n\n"
+            "wir konnten die angeforderte Literaturangabe nicht eindeutig verifizieren.\n\n"
             "{operator_message}\n\n"
-            "Bitte verwenden Sie dieses Formular:\n"
-            "{clarification_url}\n\n"
+            "Bitte verwenden Sie dieses Formular:\n{clarification_url}\n\n"
             "Mit freundlichen Grüßen\n"
             "{sender_name}"
         ),
         "body_html_template": (
             "<p>Guten Tag {greeting_name},</p>"
-            "<p>wir konnten die angeforderte Literaturangabe noch nicht eindeutig verifizieren.</p>"
+            "<p>wir konnten die angeforderte Literaturangabe nicht eindeutig verifizieren.</p>"
             "<p>{operator_message_html}</p>"
-            '<p>Bitte verwenden Sie dieses Formular:<br><a href="{clarification_url}">{clarification_url}</a></p>'
+            '<p>Bitte verwenden Sie dieses <a href="{clarification_url}">Formular</a></p>'
             "<p>Mit freundlichen Grüßen<br>{sender_name}</p>"
         ),
     },
@@ -90,38 +89,36 @@ DEFAULT_CLARIFICATION_TEMPLATES: dict[str, dict[str, str]] = {
         "subject_template": "Question about your document delivery request ({request_id})",
         "body_text_template": (
             "Hello {greeting_name},\n\n"
-            "we could not yet verify the requested citation unambiguously.\n\n"
+            "we could not verify the requested citation unambiguously.\n\n"
             "{operator_message}\n\n"
-            "Please use this form:\n"
-            "{clarification_url}\n\n"
+            "Please use this form:\n{clarification_url}\n\n"
             "Kind regards\n"
             "{sender_name}"
         ),
         "body_html_template": (
             "<p>Hello {greeting_name},</p>"
-            "<p>we could not yet verify the requested citation unambiguously.</p>"
+            "<p>we could not verify the requested citation unambiguously.</p>"
             "<p>{operator_message_html}</p>"
-            '<p>Please use this form:<br><a href="{clarification_url}">{clarification_url}</a></p>'
+            '<p>Please use this <a href="{clarification_url}">form</a></p>'
             "<p>Kind regards<br>{sender_name}</p>"
         ),
     },
     "pl": {
-        "subject_template": "Pytanie dotyczace zamowienia dokumentu ({request_id})",
+        "subject_template": "Pytanie dotyczące zamówienia dokumentu ({request_id})",
         "body_text_template": (
-            "Dzien dobry {greeting_name},\n\n"
-            "nie udalo nam sie jeszcze jednoznacznie potwierdzic zamowionego opisu bibliograficznego.\n\n"
+            "Dzień dobry {greeting_name},\n\n"
+            "nie udało nam się jednoznacznie potwierdzić zamówionego opisu bibliograficznego.\n\n"
             "{operator_message}\n\n"
-            "Prosze skorzystac z tego formularza:\n"
-            "{clarification_url}\n\n"
-            "Z powazaniem\n"
+            "Proszę skorzystać z tego formularza:\n{clarification_url}\n\n"
+            "Z poważaniem\n"
             "{sender_name}"
         ),
         "body_html_template": (
-            "<p>Dzien dobry {greeting_name},</p>"
-            "<p>nie udalo nam sie jeszcze jednoznacznie potwierdzic zamowionego opisu bibliograficznego.</p>"
+            "<p>Dzień dobry {greeting_name},</p>"
+            "<p>nie udało nam się jednoznacznie potwierdzić zamówionego opisu bibliograficznego.</p>"
             "<p>{operator_message_html}</p>"
-            '<p>Prosze skorzystac z tego formularza:<br><a href="{clarification_url}">{clarification_url}</a></p>'
-            "<p>Z powazaniem<br>{sender_name}</p>"
+            '<p>Proszę skorzystać z tego <a href="{clarification_url}">formularza</a></p>'
+            "<p>Z poważaniem<br>{sender_name}</p>"
         ),
     },
 }
