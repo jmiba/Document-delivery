@@ -55,6 +55,10 @@ def _check_token(provided: str | None, expected: str | None, name: str) -> None:
         raise HTTPException(status_code=401, detail=f"Invalid {name}")
 
 
+def _serializable_validation_errors(exc: ValidationError) -> list[dict]:
+    return exc.errors(include_context=False)
+
+
 def _build_request_payload(payload: dict) -> dict:
     if payload.get("items"):
         return payload
@@ -209,8 +213,9 @@ async def formcycle_webhook(
     try:
         payload = await _parse_formcycle_request(request)
     except ValidationError as exc:
-        logger.warning("FormCycle request validation failed: %s", exc.errors())
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        detail = _serializable_validation_errors(exc)
+        logger.warning("FormCycle request validation failed: %s", detail)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except ValueError as exc:
         logger.warning("FormCycle request payload rejected: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -227,8 +232,9 @@ async def formcycle_clarification_webhook(
     try:
         payload = await _parse_formcycle_clarification(request)
     except ValidationError as exc:
-        logger.warning("FormCycle clarification validation failed: %s", exc.errors())
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        detail = _serializable_validation_errors(exc)
+        logger.warning("FormCycle clarification validation failed: %s", detail)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except ValueError as exc:
         logger.warning("FormCycle clarification payload rejected: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
