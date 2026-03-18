@@ -61,6 +61,15 @@ Create the application config:
 cp .env.example .env
 ```
 
+`.env.example` is a hidden file because its name starts with a dot. If you do not see it in a normal directory listing, check from the repository root with:
+
+```bash
+pwd
+ls -la
+```
+
+You should run the copy command from the directory that contains `docker-compose.yml` and `README.md`.
+
 If you want OIDC login in Streamlit, also create the auth secrets file:
 
 ```bash

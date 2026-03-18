@@ -13,6 +13,8 @@ Icon?
 .env.*
 **/.env
 **/.env.*
+!.env.example
+!**/.env.example
 
 # Runtime data
 data/
