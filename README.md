@@ -119,6 +119,47 @@ The image already installs:
 
 If you use Docker Compose, you do not need Poppler or Tesseract on the host.
 
+### Tesseract and Poppler
+
+The OCR pipeline depends on two native tools:
+
+- Poppler for PDF rasterization
+- Tesseract for OCR
+
+If you use the supported Docker setup from this README, you do not install either tool on the host. They are installed inside the image during `docker compose build`.
+
+The relevant Dockerfile packages are:
+
+- `poppler-utils`
+- `tesseract-ocr`
+- `tesseract-ocr-<lang>` for every language listed in `OCR_TESSERACT_LANG_PACKS`
+
+If you run the worker outside Docker, you must install them yourself.
+
+On macOS with Homebrew:
+
+```bash
+brew install poppler tesseract
+```
+
+On Debian or Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y poppler-utils tesseract-ocr
+```
+
+If your Tesseract or Poppler binaries are not on `PATH`, set these variables in `.env`:
+
+- `OCR_TESSERACT_CMD`
+- `OCR_POPPLER_PATH`
+
+If you change `OCR_TESSERACT_LANG_PACKS`, rebuild the Docker image:
+
+```bash
+docker compose up -d --build
+```
+
 ### 7. Verify the installation
 
 Check container status:
