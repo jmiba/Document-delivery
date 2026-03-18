@@ -395,17 +395,17 @@ The API also accepts the older single-item shape with top-level `bibliographic_d
 
 ## Example FormCycle exports
 
-The repository contains reusable FormCycle template exports in `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/`.
+The repository contains reusable FormCycle template exports in `docs/examples/formcycle/`.
 
 Provided files:
 
-- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-form.json`
+- `docs/examples/formcycle/request-form.json`
   - end-user request form
-- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/request-workflow.json`
+- `docs/examples/formcycle/request-workflow.json`
   - request workflow that posts submitted items to `POST /webhooks/formcycle/requests`
-- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-form.json`
+- `docs/examples/formcycle/clarification-form.json`
   - clarification form used when the operator asks the user to correct or complete metadata
-- `/Users/jmittelbach/Github/Document delivery/docs/examples/formcycle/clarification-workflow.json`
+- `docs/examples/formcycle/clarification-workflow.json`
   - clarification workflow that posts corrected data to `POST /webhooks/formcycle/clarifications`
 
 These files are meant as importable templates for a new FormCycle setup. They preserve the field names, workflow parameters, and payload structure expected by this app.
