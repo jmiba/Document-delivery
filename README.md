@@ -88,7 +88,7 @@ mkdir -p data/scans data/app
 cp .env.example .env
 ```
 
-4. Edit `/Users/jmittelbach/Github/Document delivery/.env`.
+4. Edit `.env`.
 
 At minimum, set real values for:
 - `FORMCYCLE_WEBHOOK_SECRET`
@@ -114,9 +114,9 @@ mkdir -p .streamlit
 cp .streamlit/secrets.example.toml .streamlit/secrets.toml
 ```
 
-The Streamlit auth model used here follows `/Users/jmittelbach/Gitlab/ai-service-chatbot`: it is Streamlit's built-in OIDC login flow, not direct SAML. If your institution exposes only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it.
+The Streamlit auth model is Streamlit's built-in OIDC login flow, not direct SAML. If your institution exposes only SAML, place an OIDC-capable broker such as Authentik or Keycloak in front of it.
 
-If you do not want auth for local development, skip this step. Without a configured `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml`, the Streamlit UI starts without login.
+If you do not want auth for local development, skip this step. Without a configured `.streamlit/secrets.toml`, the Streamlit UI starts without login.
 
 6. Start services:
 
@@ -235,8 +235,8 @@ Important item statuses:
 - `CLARIFICATION_TOKEN_TTL_HOURS` controls how long a clarification link remains valid.
 - `SMTP_USE_TLS=true` with port `587` is the normal setup for authenticated submission.
 - If you use Exchange or a university SMTP submission server, `SMTP_USE_TLS=true` with `SMTP_PORT=587` is usually the correct setup. Do not enable `SMTP_USE_TLS` and `SMTP_USE_SSL` at the same time.
-- Streamlit authentication is configured through `/Users/jmittelbach/Github/Document delivery/.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
-- Streamlit light/dark colors are defined in `/Users/jmittelbach/Github/Document delivery/.streamlit/config.toml`.
+- Streamlit authentication is configured through `.streamlit/secrets.toml` using Streamlit's OIDC settings (`redirect_uri`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url`). Named providers are supported via `[auth.<provider>]`; this repo reads an optional `provider` key from `[auth]` and passes it to `st.login(provider)`.
+- Streamlit light/dark colors are defined in `.streamlit/config.toml`.
 - Delivery and clarification templates for German, English, and Polish are stored in SQLite and editable in the Streamlit `Email templates` page.
 - The Streamlit `Statistics` page aggregates request cohorts by month or year and shows request volume, fulfillment rate, average fulfillment time, metadata validation outcomes, clarification requests, and Zotero item reuse.
 - `OCR_TESSERACT_LANG_PACKS` is a Docker build-time list of installed Tesseract language packs. Rebuild the image after changing it.
