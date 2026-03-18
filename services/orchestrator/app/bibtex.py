@@ -30,13 +30,6 @@ def parse_bibtex_entry(raw: str) -> dict:
     publication_title = _container_title(item_type, fields)
     year = _extract_year(fields)
 
-    if not title:
-        raise ValueError("BibTeX entry is missing title.")
-    if not publication_title:
-        raise ValueError("BibTeX entry is missing journal/book title.")
-    if not year:
-        raise ValueError("BibTeX entry is missing year/date.")
-
     return {
         "item_type": item_type,
         "title": title,
