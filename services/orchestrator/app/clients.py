@@ -306,6 +306,32 @@ class ZoteroClient:
                 best_match = match
         return best_match
 
+    def enrich_existing_item(self, item_key: str, bib: BibliographicData) -> dict[str, object] | None:
+        current_item = self._get_item(item_key)
+        current_data = current_item.get("data") or {}
+        current_version = current_data.get("version")
+        if not isinstance(current_version, int):
+            return None
+
+        patch = self._metadata_enrichment_patch(current_data, bib)
+        if not patch:
+            return None
+
+        response = requests.patch(
+            f"{self.base}/items/{item_key}",
+            headers=self._headers(
+                content_type="application/json",
+                extra_headers={"If-Unmodified-Since-Version": str(current_version)},
+            ),
+            params={"key": self.api_key},
+            json=patch,
+            timeout=30,
+        )
+        if response.status_code == 412:
+            return None
+        response.raise_for_status()
+        return patch
+
     def create_item(self, bib: BibliographicData, request_id: str) -> str:
         endpoint = f"{self.base}/items"
         item = self._item_payload(bib, request_id)
@@ -472,6 +498,16 @@ class ZoteroClient:
         response.raise_for_status()
         return response.json()
 
+    def _get_item(self, item_key: str) -> dict:
+        response = requests.get(
+            f"{self.base}/items/{item_key}",
+            headers=self._headers(),
+            params={"key": self.api_key},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def _candidate_queries(self, bib: BibliographicData) -> list[str]:
         first_author = bib.creators[0] if bib.creators else ""
         queries = [
@@ -558,10 +594,92 @@ class ZoteroClient:
     def _container_title_from_item(self, data: dict) -> str:
         return _clean(data.get("publicationTitle")) or _clean(data.get("bookTitle"))
 
-    def _item_payload(self, bib: BibliographicData, request_id: str) -> dict:
-        item_type = self._normalize_item_type(bib.item_type)
+    def _metadata_enrichment_patch(self, data: dict, bib: BibliographicData) -> dict[str, object]:
+        patch: dict[str, object] = {}
+        item_type = self._normalize_item_type(data.get("itemType"))
+
+        if self._is_incoming_text_better(data.get("title"), bib.title):
+            patch["title"] = bib.title
+
+        container_field = self._container_field_for_item_type(item_type)
+        if container_field and self._is_incoming_text_better(data.get(container_field), bib.publication_title):
+            patch[container_field] = bib.publication_title
+
+        if bib.year and not _extract_year(data.get("date")):
+            patch["date"] = bib.year
+        if bib.doi and not _normalize_doi(data.get("DOI")):
+            patch["DOI"] = bib.doi
+        if bib.language and not _clean(data.get("language")):
+            patch["language"] = bib.language
+        if bib.abstract_note and not _clean(data.get("abstractNote")):
+            patch["abstractNote"] = bib.abstract_note
+
+        if item_type == "journalArticle":
+            self._set_if_missing(patch, "volume", data.get("volume"), bib.volume)
+            self._set_if_missing(patch, "issue", data.get("issue"), bib.issue)
+            self._set_if_missing(patch, "pages", data.get("pages"), bib.pages)
+        elif item_type == "bookSection":
+            self._set_if_missing(patch, "pages", data.get("pages"), bib.pages)
+            self._set_if_missing(patch, "publisher", data.get("publisher"), bib.publisher)
+            self._set_if_missing(patch, "place", data.get("place"), bib.place)
+            self._set_if_missing(patch, "ISBN", data.get("ISBN"), bib.isbn)
+        elif item_type == "book":
+            self._set_if_missing(patch, "publisher", data.get("publisher"), bib.publisher)
+            self._set_if_missing(patch, "place", data.get("place"), bib.place)
+            self._set_if_missing(patch, "edition", data.get("edition"), bib.edition)
+            self._set_if_missing(patch, "ISBN", data.get("ISBN"), bib.isbn)
+            self._set_if_missing(patch, "series", data.get("series"), bib.series)
+        else:
+            self._set_if_missing(patch, "volume", data.get("volume"), bib.volume)
+            self._set_if_missing(patch, "issue", data.get("issue"), bib.issue)
+            self._set_if_missing(patch, "pages", data.get("pages"), bib.pages)
+            self._set_if_missing(patch, "publisher", data.get("publisher"), bib.publisher)
+            self._set_if_missing(patch, "place", data.get("place"), bib.place)
+
+        if not data.get("creators") and (bib.creators or bib.editors):
+            patch["creators"] = self._creators_payload(bib)
+
+        return patch
+
+    def _set_if_missing(self, patch: dict[str, object], field: str, current_value, incoming_value: str | None) -> None:
+        if incoming_value and not _clean(current_value):
+            patch[field] = incoming_value
+
+    def _container_field_for_item_type(self, item_type: str) -> str | None:
+        if item_type == "journalArticle":
+            return "publicationTitle"
+        if item_type == "bookSection":
+            return "bookTitle"
+        if item_type in {"conferencePaper", "report"}:
+            return "publicationTitle"
+        return None
+
+    def _is_incoming_text_better(self, current_value: str | None, incoming_value: str | None) -> bool:
+        current = _clean(current_value)
+        incoming = _clean(incoming_value)
+        if not incoming:
+            return False
+        if not current:
+            return True
+        if _normalize_text(current) == _normalize_text(incoming):
+            return False
+
+        current_compact = "".join(ch for ch in _normalize_text(current) if ch.isalnum())
+        incoming_compact = "".join(ch for ch in _normalize_text(incoming) if ch.isalnum())
+        if current_compact and current_compact in incoming_compact and len(incoming) > len(current):
+            return True
+        if current.isascii() and not incoming.isascii() and _dice_coefficient(current, incoming) >= 0.88:
+            return True
+        return _dice_coefficient(current, incoming) >= 0.92 and len(incoming) > len(current) + 4
+
+    def _creators_payload(self, bib: BibliographicData) -> list[dict[str, str]]:
         creators = [{"creatorType": "author", "name": creator} for creator in bib.creators]
         creators.extend({"creatorType": "editor", "name": editor} for editor in bib.editors)
+        return creators
+
+    def _item_payload(self, bib: BibliographicData, request_id: str) -> dict:
+        item_type = self._normalize_item_type(bib.item_type)
+        creators = self._creators_payload(bib)
         extra_lines = [f"Request-ID: {request_id}"]
         item = {
             "itemType": item_type,

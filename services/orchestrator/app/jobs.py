@@ -1121,6 +1121,23 @@ def _process_zotero_stage(snapshot: dict) -> None:
             existing_item.get("score"),
             existing_item.get("reason"),
         )
+        try:
+            enrichment_patch = zotero.enrich_existing_item(existing_item["key"], bib)
+        except Exception as exc:
+            _log_zotero_item_enrichment_failed_event(
+                snapshot["request_id"],
+                snapshot["item_id"],
+                existing_item["key"],
+                str(exc),
+            )
+        else:
+            if enrichment_patch:
+                _log_zotero_item_enriched_event(
+                    snapshot["request_id"],
+                    snapshot["item_id"],
+                    existing_item["key"],
+                    enrichment_patch,
+                )
         attachment_key = None if has_uploaded_scan else zotero.find_pdf_attachment(existing_item["key"])
         _update_item(
             snapshot["item_id"],
@@ -1479,6 +1496,45 @@ def _log_zotero_attachment_reused_event(
             payload={
                 "zotero_attachment_key": attachment_key,
                 "reason": reason,
+            },
+        )
+
+
+def _log_zotero_item_enriched_event(
+    request_id: str,
+    request_item_id: int,
+    zotero_item_key: str,
+    changes: dict[str, object],
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_item_enriched",
+            payload={
+                "zotero_item_key": zotero_item_key,
+                "changes": changes,
+            },
+        )
+
+
+def _log_zotero_item_enrichment_failed_event(
+    request_id: str,
+    request_item_id: int,
+    zotero_item_key: str,
+    error: str,
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_item_enrichment_failed",
+            level="WARNING",
+            payload={
+                "zotero_item_key": zotero_item_key,
+                "error": error,
             },
         )
 
