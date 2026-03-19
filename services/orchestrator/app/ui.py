@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 
@@ -11,6 +13,8 @@ import streamlit as st
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
+PASSWORD_AUTH_SESSION_KEY = "password_auth_authenticated"
+PASSWORD_AUTH_USER_KEY = "password_auth_user"
 
 
 def _auth_settings() -> dict:
@@ -21,6 +25,51 @@ def _auth_settings() -> dict:
     if hasattr(auth_settings, "to_dict"):
         auth_settings = auth_settings.to_dict()
     return auth_settings if isinstance(auth_settings, dict) else {}
+
+
+def _password_auth_settings() -> dict:
+    try:
+        password_settings = st.secrets.get("password_auth", {})
+    except Exception:
+        return {}
+    if hasattr(password_settings, "to_dict"):
+        password_settings = password_settings.to_dict()
+    return password_settings if isinstance(password_settings, dict) else {}
+
+
+def _password_auth_enabled() -> bool:
+    password_settings = _password_auth_settings()
+    if password_settings.get("enabled") is False:
+        return False
+    return bool(password_settings.get("username")) and bool(
+        password_settings.get("password_sha256") or password_settings.get("password")
+    )
+
+
+def _password_auth_username() -> str:
+    return str(_password_auth_settings().get("username") or "").strip()
+
+
+def _password_hash(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def _password_matches(password: str) -> bool:
+    settings = _password_auth_settings()
+    expected_hash = str(settings.get("password_sha256") or "").strip().lower()
+    if expected_hash:
+        return hmac.compare_digest(_password_hash(password), expected_hash)
+    expected_password = str(settings.get("password") or "")
+    return bool(expected_password) and hmac.compare_digest(password, expected_password)
+
+
+def _is_password_authenticated() -> bool:
+    return bool(st.session_state.get(PASSWORD_AUTH_SESSION_KEY))
+
+
+def _password_logout() -> None:
+    st.session_state.pop(PASSWORD_AUTH_SESSION_KEY, None)
+    st.session_state.pop(PASSWORD_AUTH_USER_KEY, None)
 
 
 def _auth_enabled() -> bool:
@@ -44,6 +93,8 @@ def _login() -> None:
 
 
 def _current_user_label() -> str:
+    if _password_auth_enabled() and _is_password_authenticated():
+        return str(st.session_state.get(PASSWORD_AUTH_USER_KEY) or _password_auth_username() or "Authenticated user")
     if hasattr(st.user, "name") and st.user.name:
         return str(st.user.name)
     if hasattr(st.user, "email") and st.user.email:
@@ -54,6 +105,25 @@ def _current_user_label() -> str:
 
 
 def _require_authentication() -> None:
+    if _password_auth_enabled():
+        if _is_password_authenticated():
+            return
+        st.title("Document Delivery Ops")
+        st.caption("Authentication required")
+        with st.form("password-auth-form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submitted:
+            if (
+                hmac.compare_digest(username.strip(), _password_auth_username())
+                and _password_matches(password)
+            ):
+                st.session_state[PASSWORD_AUTH_SESSION_KEY] = True
+                st.session_state[PASSWORD_AUTH_USER_KEY] = _password_auth_username()
+                st.rerun()
+            st.error("Invalid username or password.")
+        st.stop()
     if not _auth_enabled():
         return
     if getattr(st.user, "is_logged_in", False):
@@ -527,16 +597,24 @@ st.caption("FastAPI + worker + SQLite pipeline status")
 
 with st.sidebar:
     page = st.radio("Page", ["Requests", "Statistics", "Email templates"], index=0)
-    if _auth_enabled():
+    if _password_auth_enabled() or _auth_enabled():
         st.divider()
         st.subheader("Account")
         st.caption(_current_user_label())
-        st.button(
-            "Log out",
-            use_container_width=True,
-            icon=":material/logout:",
-            on_click=st.logout,
-        )
+        if _password_auth_enabled():
+            st.button(
+                "Log out",
+                use_container_width=True,
+                icon=":material/logout:",
+                on_click=_password_logout,
+            )
+        else:
+            st.button(
+                "Log out",
+                use_container_width=True,
+                icon=":material/logout:",
+                on_click=st.logout,
+            )
 
 
 def _render_template_editor() -> None:

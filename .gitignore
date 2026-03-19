@@ -16,6 +16,12 @@ Icon?
 !.env.example
 !**/.env.example
 
+# Streamlit local secrets
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml
+!.streamlit/secrets.example.toml
+!**/.streamlit/secrets.example.toml
+
 # Runtime data
 data/
 __pycache__/
