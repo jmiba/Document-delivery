@@ -595,12 +595,13 @@ def _render_requests_page() -> None:
     for request in requests_data:
         status_counts[request["status"]] = status_counts.get(request["status"], 0) + 1
 
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("Requests", len(requests_data))
     metrics[1].metric("Waiting", status_counts.get("WAITING_FOR_ATTACHMENT", 0))
     metrics[2].metric("Review", status_counts.get("NEEDS_REVIEW", 0))
     metrics[3].metric("Awaiting User", status_counts.get("AWAITING_USER", 0))
-    metrics[4].metric("Processed", status_counts.get("PROCESSED", 0))
+    metrics[4].metric("Rejected", status_counts.get("REJECTED", 0))
+    metrics[5].metric("Processed", status_counts.get("PROCESSED", 0))
 
     table_rows = [
         {
