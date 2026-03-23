@@ -308,3 +308,20 @@ class UpdateEmailTemplateRequest(BaseModel):
     subject_template: str
     body_text_template: str
     body_html_template: str
+
+
+class OperatorTextTemplateEntryInput(BaseModel):
+    label: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class ReplaceOperatorTextTemplatesRequest(BaseModel):
+    entries: list[OperatorTextTemplateEntryInput] = Field(default_factory=list)
+
+
+class OperatorTextTemplateEntrySummary(BaseModel):
+    template_kind: str
+    language: str
+    label: str
+    text: str
+    sort_order: int

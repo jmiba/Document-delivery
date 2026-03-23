@@ -188,6 +188,98 @@ DEFAULT_REJECTION_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 
+DEFAULT_OPERATOR_TEXT_TEMPLATES: dict[str, dict[str, list[dict[str, str]]]] = {
+    "rejection_reason": {
+        "de": [
+            {
+                "label": "Lizenzrechtliche Bedingungen",
+                "text": "Die Anfrage kann aufgrund lizenzrechtlicher Bedingungen leider nicht erfüllt werden.",
+            },
+            {
+                "label": "Kein lokaler Print-Bestand / Fernleihe",
+                "text": "Der Titel ist lokal nicht im Print-Bestand vorhanden. Bitte nutzen Sie die Fernleihe als Alternative.",
+            },
+            {
+                "label": "Online bereits zugänglich",
+                "text": "Der angefragte Titel ist bereits online zugänglich.",
+            },
+        ],
+        "en": [
+            {
+                "label": "Licensing restrictions",
+                "text": "Unfortunately, we cannot fulfill this request due to licensing restrictions.",
+            },
+            {
+                "label": "No local print holdings / Interlibrary loan",
+                "text": "The title is not available in our local print holdings. Please use interlibrary loan as an alternative.",
+            },
+            {
+                "label": "Already available online",
+                "text": "The requested title is already available online.",
+            },
+        ],
+        "pl": [
+            {
+                "label": "Ograniczenia licencyjne",
+                "text": "Niestety nie mozemy zrealizowac tej prosby ze wzgledu na ograniczenia licencyjne.",
+            },
+            {
+                "label": "Brak lokalnego egzemplarza drukowanego / Wypozyczenie miedzybiblioteczne",
+                "text": "Tytul nie jest dostepny w lokalnym zbiorze drukowanym. Prosze skorzystac z wypozyczenia miedzybibliotecznego jako alternatywy.",
+            },
+            {
+                "label": "Pozycja dostepna online",
+                "text": "Zamawiany tytul jest juz dostepny online.",
+            },
+        ],
+    },
+    "clarification_detail": {
+        "de": [
+            {
+                "label": "Autorennamen prüfen",
+                "text": "Bitte überprüfen Sie die Autorennamen.",
+            },
+            {
+                "label": "Titel prüfen",
+                "text": "Bitte überprüfen Sie den Titel.",
+            },
+            {
+                "label": "Seitenzahlen/weitere Angaben prüfen",
+                "text": "Bitte überprüfen Sie die Seitenzahlen oder ergänzen Sie weitere Angaben zur sicheren Identifikation des gewünschten Titels.",
+            },
+        ],
+        "en": [
+            {
+                "label": "Verify author names",
+                "text": "Please verify the author names.",
+            },
+            {
+                "label": "Verify title",
+                "text": "Please verify the title.",
+            },
+            {
+                "label": "Verify pages/other identifying details",
+                "text": "Please verify the page numbers or provide additional details so we can identify the requested title reliably.",
+            },
+        ],
+        "pl": [
+            {
+                "label": "Sprawdz nazwiska autorow",
+                "text": "Prosze sprawdzic nazwiska autorow.",
+            },
+            {
+                "label": "Sprawdz tytul",
+                "text": "Prosze sprawdzic tytul.",
+            },
+            {
+                "label": "Sprawdz strony/inne dane identyfikacyjne",
+                "text": "Prosze sprawdzic numery stron lub podac dodatkowe informacje, aby mozna bylo jednoznacznie zidentyfikowac zamawiany tytul.",
+            },
+        ],
+    },
+}
+
+
 def sanitize_template_placeholders(template: str) -> str:
     return template.replace("{followup_text}", "").replace("{followup_html}", "")
 

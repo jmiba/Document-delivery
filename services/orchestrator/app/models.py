@@ -128,3 +128,16 @@ class RejectionTemplate(Base):
     body_html_template: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class OperatorTextTemplateEntry(Base):
+    __tablename__ = "operator_text_template_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_kind: Mapped[str] = mapped_column(String(64), index=True)
+    language: Mapped[str] = mapped_column(String(16), index=True)
+    label: Mapped[str] = mapped_column(Text)
+    text_value: Mapped[str] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

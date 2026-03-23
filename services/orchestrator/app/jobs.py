@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import case, select
+from sqlalchemy import case, delete, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.clients import NextcloudClient, NotificationClient, ZoteroClient
@@ -26,7 +26,9 @@ from app.schemas import (
     FormCycleClarificationResponse,
     FormCycleRequest,
     JobEventSummary,
+    OperatorTextTemplateEntrySummary,
     PeriodStatisticsSummary,
+    ReplaceOperatorTextTemplatesRequest,
     RejectRequestItemRequest,
     RejectionNotificationPayload,
     RequestClarificationRequest,
@@ -34,6 +36,10 @@ from app.schemas import (
     RequestSummary,
     UpdateEmailTemplateRequest,
 )
+
+
+SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS = {"rejection_reason", "clarification_detail"}
+SUPPORTED_TEMPLATE_LANGUAGES = {"de", "en", "pl"}
 
 
 def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
@@ -480,6 +486,103 @@ def update_rejection_template(language: str, payload: UpdateEmailTemplateRequest
             body_html_template=template.body_html_template,
             updated_at=template.updated_at,
         )
+
+
+def list_operator_text_templates(template_kind: str, language: str) -> list[OperatorTextTemplateEntrySummary]:
+    from app.models import OperatorTextTemplateEntry
+    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATES
+
+    normalized_kind = template_kind.strip().lower()
+    normalized_language = language.strip().lower()
+    if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
+        raise ValueError("Unsupported template kind")
+    if normalized_language not in SUPPORTED_TEMPLATE_LANGUAGES:
+        raise ValueError("Unsupported language")
+
+    with session_scope() as session:
+        stored = list(
+            session.scalars(
+                select(OperatorTextTemplateEntry)
+                .where(OperatorTextTemplateEntry.template_kind == normalized_kind)
+                .where(OperatorTextTemplateEntry.language == normalized_language)
+                .order_by(OperatorTextTemplateEntry.sort_order.asc(), OperatorTextTemplateEntry.id.asc())
+            )
+        )
+
+    if stored:
+        return [
+            OperatorTextTemplateEntrySummary(
+                template_kind=entry.template_kind,
+                language=entry.language,
+                label=entry.label,
+                text=entry.text_value,
+                sort_order=entry.sort_order,
+            )
+            for entry in stored
+        ]
+
+    defaults = DEFAULT_OPERATOR_TEXT_TEMPLATES.get(normalized_kind, {}).get(normalized_language, [])
+    return [
+        OperatorTextTemplateEntrySummary(
+            template_kind=normalized_kind,
+            language=normalized_language,
+            label=entry["label"],
+            text=entry["text"],
+            sort_order=index,
+        )
+        for index, entry in enumerate(defaults)
+    ]
+
+
+def replace_operator_text_templates(
+    template_kind: str,
+    language: str,
+    payload: ReplaceOperatorTextTemplatesRequest,
+) -> list[OperatorTextTemplateEntrySummary]:
+    from app.models import OperatorTextTemplateEntry
+
+    normalized_kind = template_kind.strip().lower()
+    normalized_language = language.strip().lower()
+    if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
+        raise ValueError("Unsupported template kind")
+    if normalized_language not in SUPPORTED_TEMPLATE_LANGUAGES:
+        raise ValueError("Unsupported language")
+
+    cleaned_entries = []
+    for entry in payload.entries:
+        label = entry.label.strip()
+        text_value = entry.text.strip()
+        if not label or not text_value:
+            continue
+        cleaned_entries.append({"label": label, "text": text_value})
+
+    with session_scope() as session:
+        session.execute(
+            delete(OperatorTextTemplateEntry)
+            .where(OperatorTextTemplateEntry.template_kind == normalized_kind)
+            .where(OperatorTextTemplateEntry.language == normalized_language)
+        )
+        for index, entry in enumerate(cleaned_entries):
+            session.add(
+                OperatorTextTemplateEntry(
+                    template_kind=normalized_kind,
+                    language=normalized_language,
+                    label=entry["label"],
+                    text_value=entry["text"],
+                    sort_order=index,
+                )
+            )
+
+    return [
+        OperatorTextTemplateEntrySummary(
+            template_kind=normalized_kind,
+            language=normalized_language,
+            label=entry["label"],
+            text=entry["text"],
+            sort_order=index,
+        )
+        for index, entry in enumerate(cleaned_entries)
+    ]
 
 
 def retry_request(request_id: str) -> bool:

@@ -37,6 +37,7 @@ def init_db() -> None:
     _seed_email_templates()
     _seed_clarification_templates()
     _seed_rejection_templates()
+    _seed_operator_text_templates()
 
 
 def _migrate_sqlite() -> None:
@@ -214,4 +215,33 @@ def _seed_rejection_templates() -> None:
                     body_html_template=sanitize_template_placeholders(template["body_html_template"]),
                 )
             )
+        session.commit()
+
+
+def _seed_operator_text_templates() -> None:
+    from app.models import OperatorTextTemplateEntry
+    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATES
+
+    with SessionLocal() as session:
+        for template_kind, by_language in DEFAULT_OPERATOR_TEXT_TEMPLATES.items():
+            for language, entries in by_language.items():
+                exists = session.scalar(
+                    text(
+                        "SELECT 1 FROM operator_text_template_entries "
+                        "WHERE template_kind = :template_kind AND language = :language LIMIT 1"
+                    ),
+                    {"template_kind": template_kind, "language": language},
+                )
+                if exists:
+                    continue
+                for index, entry in enumerate(entries):
+                    session.add(
+                        OperatorTextTemplateEntry(
+                            template_kind=template_kind,
+                            language=language,
+                            label=entry["label"],
+                            text_value=entry["text"],
+                            sort_order=index,
+                        )
+                    )
         session.commit()

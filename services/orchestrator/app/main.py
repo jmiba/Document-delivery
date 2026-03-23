@@ -18,12 +18,14 @@ from app.jobs import (
     get_period_statistics,
     list_clarification_templates,
     list_email_templates,
+    list_operator_text_templates,
     list_rejection_templates,
     list_job_events,
     list_requests,
     remove_uploaded_scan_for_item,
     reject_request_item,
     request_item_clarification,
+    replace_operator_text_templates,
     retry_request,
     upload_scan_for_item,
     update_clarification_template,
@@ -34,6 +36,7 @@ from app.schemas import (
     ApproveMetadataRequest,
     FormCycleClarificationResponse,
     FormCycleRequest,
+    ReplaceOperatorTextTemplatesRequest,
     RejectRequestItemRequest,
     RequestClarificationRequest,
     UpdateEmailTemplateRequest,
@@ -435,3 +438,32 @@ def put_rejection_template(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return template.model_dump(mode="json")
+
+
+@app.get("/operator-text-templates/{template_kind}/{language}")
+def get_operator_text_templates(
+    template_kind: str,
+    language: str,
+    x_internal_token: str | None = Header(default=None),
+) -> list[dict]:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        templates = list_operator_text_templates(template_kind, language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [entry.model_dump(mode="json") for entry in templates]
+
+
+@app.put("/operator-text-templates/{template_kind}/{language}")
+def put_operator_text_templates(
+    template_kind: str,
+    language: str,
+    payload: ReplaceOperatorTextTemplatesRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> list[dict]:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        templates = replace_operator_text_templates(template_kind, language, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [entry.model_dump(mode="json") for entry in templates]

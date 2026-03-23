@@ -16,6 +16,103 @@ INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 PASSWORD_AUTH_SESSION_KEY = "password_auth_authenticated"
 PASSWORD_AUTH_USER_KEY = "password_auth_user"
 
+SUPPORTED_MESSAGE_LANGUAGES = {"de", "en", "pl"}
+LANGUAGE_LABELS = {"de": "German", "en": "English", "pl": "Polish"}
+OPERATOR_TEXT_TEMPLATE_KIND_LABELS = {
+    "rejection_reason": "Rejection reasons",
+    "clarification_detail": "Clarification details",
+}
+
+REJECTION_REASON_TEMPLATES = {
+    "de": [
+        {
+            "label": "Lizenzrechtliche Bedingungen",
+            "text": "Die Anfrage kann aufgrund lizenzrechtlicher Bedingungen leider nicht erfüllt werden.",
+        },
+        {
+            "label": "Kein lokaler Print-Bestand / Fernleihe",
+            "text": "Der Titel ist lokal nicht im Print-Bestand vorhanden. Bitte nutzen Sie die Fernleihe als Alternative.",
+        },
+        {
+            "label": "Online bereits zugänglich",
+            "text": "Der angefragte Titel ist bereits online zugänglich.",
+        },
+    ],
+    "en": [
+        {
+            "label": "Licensing restrictions",
+            "text": "Unfortunately, we cannot fulfill this request due to licensing restrictions.",
+        },
+        {
+            "label": "No local print holdings / Interlibrary loan",
+            "text": "The title is not available in our local print holdings. Please use interlibrary loan as an alternative.",
+        },
+        {
+            "label": "Already available online",
+            "text": "The requested title is already available online.",
+        },
+    ],
+    "pl": [
+        {
+            "label": "Ograniczenia licencyjne",
+            "text": "Niestety nie mozemy zrealizowac tej prosby ze wzgledu na ograniczenia licencyjne.",
+        },
+        {
+            "label": "Brak lokalnego egzemplarza drukowanego / Wypozyczenie miedzybiblioteczne",
+            "text": "Tytul nie jest dostepny w lokalnym zbiorze drukowanym. Prosze skorzystac z wypozyczenia miedzybibliotecznego jako alternatywy.",
+        },
+        {
+            "label": "Pozycja dostepna online",
+            "text": "Zamawiany tytul jest juz dostepny online.",
+        },
+    ],
+}
+
+CLARIFICATION_DETAIL_TEMPLATES = {
+    "de": [
+        {
+            "label": "Autorennamen prüfen",
+            "text": "Bitte überprüfen Sie die Autorennamen.",
+        },
+        {
+            "label": "Titel prüfen",
+            "text": "Bitte überprüfen Sie den Titel.",
+        },
+        {
+            "label": "Seitenzahlen/weitere Angaben prüfen",
+            "text": "Bitte überprüfen Sie die Seitenzahlen oder ergänzen Sie weitere Angaben zur sicheren Identifikation des gewünschten Titels.",
+        },
+    ],
+    "en": [
+        {
+            "label": "Verify author names",
+            "text": "Please verify the author names.",
+        },
+        {
+            "label": "Verify title",
+            "text": "Please verify the title.",
+        },
+        {
+            "label": "Verify pages/other identifying details",
+            "text": "Please verify the page numbers or provide additional details so we can identify the requested title reliably.",
+        },
+    ],
+    "pl": [
+        {
+            "label": "Sprawdz nazwiska autorow",
+            "text": "Prosze sprawdzic nazwiska autorow.",
+        },
+        {
+            "label": "Sprawdz tytul",
+            "text": "Prosze sprawdzic tytul.",
+        },
+        {
+            "label": "Sprawdz strony/inne dane identyfikacyjne",
+            "text": "Prosze sprawdzic numery stron lub podac dodatkowe informacje, aby mozna bylo jednoznacznie zidentyfikowac zamawiany tytul.",
+        },
+    ],
+}
+
 
 def _auth_settings() -> dict:
     try:
@@ -155,6 +252,26 @@ def _creators_to_string(value) -> str:
     if isinstance(value, list):
         return "; ".join(str(part).strip() for part in value if str(part).strip())
     return str(value or "").strip()
+
+
+def _request_language(request: dict) -> str:
+    language = str(request.get("language") or "").strip().lower()
+    if language in SUPPORTED_MESSAGE_LANGUAGES:
+        return language
+    return "de"
+
+
+def _compose_message(
+    selected_labels: list[str],
+    templates: list[dict[str, str]],
+    free_text: str,
+) -> str:
+    text_by_label = {template["label"]: template["text"] for template in templates}
+    selected_texts = [text_by_label[label] for label in selected_labels if label in text_by_label]
+    free_text_clean = free_text.strip()
+    if free_text_clean:
+        selected_texts.append(free_text_clean)
+    return "\n\n".join(part for part in selected_texts if part.strip())
 
 
 def _human_readable_bib_rows(payload: dict) -> list[dict]:
@@ -304,6 +421,28 @@ def fetch_clarification_templates() -> list[dict]:
 
 def fetch_rejection_templates() -> list[dict]:
     response = requests.get(f"{API_BASE_URL}/rejection-templates", headers=_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_operator_text_templates(template_kind: str, language: str) -> list[dict]:
+    response = requests.get(
+        f"{API_BASE_URL}/operator-text-templates/{template_kind}/{language}",
+        headers=_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return [{"label": row.get("label", ""), "text": row.get("text", "")} for row in payload]
+
+
+def save_operator_text_templates(template_kind: str, language: str, entries: list[dict]) -> list[dict]:
+    response = requests.put(
+        f"{API_BASE_URL}/operator-text-templates/{template_kind}/{language}",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json={"entries": entries},
+        timeout=30,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -644,7 +783,7 @@ def _render_template_editor() -> None:
         )
         templates = fetch_rejection_templates()
     templates_by_language = {template["language"]: template for template in templates}
-    language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: {"de": "German", "en": "English", "pl": "Polish"}[value])
+    language = st.selectbox("Language", ["de", "en", "pl"], format_func=lambda value: LANGUAGE_LABELS[value])
     template = templates_by_language[language]
     with st.form(f"email-template-{template_kind}-{language}"):
         subject_template = st.text_input("Subject template", value=template["subject_template"])
@@ -665,6 +804,62 @@ def _render_template_editor() -> None:
             st.rerun()
 
     st.caption(f"Last updated: {template['updated_at'] or 'default template'}")
+
+    st.divider()
+    st.subheader("Predefined text blocks")
+    st.caption("Manage selectable texts for rejection reasons and clarification details.")
+
+    template_kind = st.selectbox(
+        "Text block type",
+        ["rejection_reason", "clarification_detail"],
+        format_func=lambda value: OPERATOR_TEXT_TEMPLATE_KIND_LABELS[value],
+        key="operator-text-template-kind",
+    )
+    template_language = st.selectbox(
+        "Text block language",
+        ["de", "en", "pl"],
+        format_func=lambda value: LANGUAGE_LABELS[value],
+        key="operator-text-template-language",
+    )
+
+    try:
+        existing_entries = fetch_operator_text_templates(template_kind, template_language)
+    except requests.RequestException as exc:
+        st.error(f"Could not load predefined text blocks: {exc}")
+        return
+
+    editor_df = pd.DataFrame(existing_entries)
+    if editor_df.empty:
+        editor_df = pd.DataFrame(columns=["label", "text"])
+    else:
+        editor_df = editor_df[["label", "text"]]
+
+    edited_df = st.data_editor(
+        editor_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key=f"operator-text-editor-{template_kind}-{template_language}",
+        column_config={
+            "label": st.column_config.TextColumn("Label", required=True),
+            "text": st.column_config.TextColumn("Text", required=True, width="large"),
+        },
+    )
+
+    if st.button("Save predefined texts", key=f"save-operator-texts-{template_kind}-{template_language}"):
+        entries: list[dict] = []
+        for _, row in edited_df.iterrows():
+            label = str(row.get("label") or "").strip()
+            text = str(row.get("text") or "").strip()
+            if not label and not text:
+                continue
+            if not label or not text:
+                st.error("Each predefined text row needs both label and text.")
+                st.stop()
+            entries.append({"label": label, "text": text})
+        save_operator_text_templates(template_kind, template_language, entries)
+        st.success("Predefined texts saved")
+        st.rerun()
 
 
 def _render_requests_page() -> None:
@@ -729,6 +924,13 @@ def _render_requests_page() -> None:
         return
 
     request = fetch_request(selected_request)
+    request_language = _request_language(request)
+    try:
+        clarification_text_templates = fetch_operator_text_templates("clarification_detail", request_language)
+        rejection_text_templates = fetch_operator_text_templates("rejection_reason", request_language)
+    except requests.RequestException:
+        clarification_text_templates = CLARIFICATION_DETAIL_TEMPLATES[request_language]
+        rejection_text_templates = REJECTION_REASON_TEMPLATES[request_language]
     events = fetch_events(selected_request)
 
     summary_col, action_col = st.columns([4, 1])
@@ -782,7 +984,7 @@ def _render_requests_page() -> None:
     rejectable_items = [
         item
         for item in request["items"]
-        if item["status"] in {"PENDING_METADATA", "NEEDS_REVIEW", "AWAITING_USER", "FAILED"}
+        if item["status"] not in {"DELIVERED", "REJECTED"}
     ]
 
     review_candidates = [item for item in request["items"] if item["status"] == "NEEDS_REVIEW"]
@@ -899,16 +1101,27 @@ def _render_requests_page() -> None:
                         st.rerun()
 
         with st.form(f"clarification-item-{selected_review['id']}"):
-            clarification_message = st.text_area(
-                "Clarification request to the user",
+            clarification_templates = clarification_text_templates
+            selected_clarification_labels = st.multiselect(
+                "Predefined clarification details",
+                options=[template["label"] for template in clarification_templates],
+                key=f"clarification-templates-{selected_review['id']}",
+            )
+            clarification_message_free_text = st.text_area(
+                "Additional clarification details",
                 value="",
-                help="Explain what is unclear and what the user should correct or complete.",
+                help="Free text in addition to predefined clarification details.",
                 height=140,
             )
             clarification_submitted = st.form_submit_button("Request clarification")
             if clarification_submitted:
+                clarification_message = _compose_message(
+                    selected_clarification_labels,
+                    clarification_templates,
+                    clarification_message_free_text,
+                )
                 if not clarification_message.strip():
-                    st.error("A clarification message is required.")
+                    st.error("Select at least one predefined detail or enter free text.")
                     st.stop()
                 request_clarification(request["request_id"], selected_review["id"], clarification_message)
                 st.success("Clarification request sent.")
@@ -979,16 +1192,27 @@ def _render_requests_page() -> None:
             key=f"reject-item-{request['request_id']}",
         )
         with st.form(f"reject-item-form-{rejected_item['id']}"):
-            rejection_reason = st.text_area(
-                "Reason for rejection",
+            rejection_templates = rejection_text_templates
+            selected_rejection_labels = st.multiselect(
+                "Predefined rejection reasons",
+                options=[template["label"] for template in rejection_templates],
+                key=f"rejection-templates-{rejected_item['id']}",
+            )
+            rejection_reason_free_text = st.text_area(
+                "Additional rejection reason",
                 value="",
-                help="This reason is sent to the requester in the rejection mail.",
+                help="Free text in addition to predefined rejection reasons.",
                 height=120,
             )
             reject_submitted = st.form_submit_button("Reject item")
             if reject_submitted:
+                rejection_reason = _compose_message(
+                    selected_rejection_labels,
+                    rejection_templates,
+                    rejection_reason_free_text,
+                )
                 if not rejection_reason.strip():
-                    st.error("A rejection reason is required.")
+                    st.error("Select at least one predefined reason or enter free text.")
                     st.stop()
                 reject_item(request["request_id"], rejected_item["id"], rejection_reason)
                 st.success("Rejection mail sent and item rejected.")
