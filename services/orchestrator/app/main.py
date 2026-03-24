@@ -16,6 +16,7 @@ from app.jobs import (
     get_request_summary,
     ingest_clarification_response,
     get_period_statistics,
+    get_statistics_insights,
     list_clarification_templates,
     list_email_templates,
     list_operator_text_template_groups,
@@ -283,6 +284,19 @@ def get_statistics(
     _check_token(x_internal_token, settings.internal_api_token, "internal token")
     try:
         return [row.model_dump(mode="json") for row in get_period_statistics(granularity=granularity, periods=periods)]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/statistics/insights")
+def get_statistics_insights_endpoint(
+    granularity: str = "month",
+    periods: int = 12,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
+    _check_token(x_internal_token, settings.internal_api_token, "internal token")
+    try:
+        return get_statistics_insights(granularity=granularity, periods=periods).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

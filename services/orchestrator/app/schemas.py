@@ -291,12 +291,38 @@ class PeriodStatisticsSummary(BaseModel):
     fulfillment_rate: float
     rejection_rate: float
     avg_fulfillment_hours: float | None
+    median_fulfillment_hours: float | None
+    p90_fulfillment_hours: float | None
     pdf_pages_total: int
     avg_pdf_pages_per_fulfilled_request: float | None
     valid_metadata_items: int
     invalid_metadata_items: int
     clarification_requests: int
     reused_items: int
+
+
+class ClarificationBreakdownSummary(BaseModel):
+    bucket: str
+    total_items: int
+    clarified_items: int
+    clarification_rate: float
+
+
+class PeriodBucketCountSummary(BaseModel):
+    period_start: datetime
+    period_label: str
+    bucket: str
+    count: int
+
+
+class StatisticsInsightsSummary(BaseModel):
+    median_fulfillment_hours: float | None
+    p90_fulfillment_hours: float | None
+    clarification_by_language: list[ClarificationBreakdownSummary]
+    clarification_by_item_type: list[ClarificationBreakdownSummary]
+    requested_requests_by_language: list[PeriodBucketCountSummary]
+    requested_items_by_type: list[PeriodBucketCountSummary]
+    fulfilled_items_by_type: list[PeriodBucketCountSummary]
 
 
 class EmailTemplateSummary(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.resolution import ResolutionService
 from app.schemas import (
     ApproveMetadataRequest,
     BibliographicData,
+    ClarificationBreakdownSummary,
     ClarificationNotificationPayload,
     DeliveryItemPayload,
     DeliveryNotificationPayload,
@@ -29,6 +31,7 @@ from app.schemas import (
     JobEventSummary,
     OperatorTextTemplateEntrySummary,
     OperatorTextTemplateGroupSummary,
+    PeriodBucketCountSummary,
     PeriodStatisticsSummary,
     ReplaceOperatorTextTemplateGroupsRequest,
     ReplaceOperatorTextTemplatesRequest,
@@ -37,6 +40,7 @@ from app.schemas import (
     RequestClarificationRequest,
     RequestItemSummary,
     RequestSummary,
+    StatisticsInsightsSummary,
     UpdateEmailTemplateRequest,
 )
 
@@ -186,19 +190,8 @@ def list_job_events(request_id: str) -> list[JobEventSummary]:
 
 
 def get_period_statistics(granularity: str = "month", periods: int = 12) -> list[PeriodStatisticsSummary]:
-    normalized_granularity = granularity.strip().lower()
-    if normalized_granularity not in {"day", "week", "month", "year"}:
-        raise ValueError("Unsupported granularity")
-    if normalized_granularity == "day":
-        max_periods = 120
-    elif normalized_granularity == "week":
-        max_periods = 104
-    else:
-        max_periods = 60
-    capped_periods = max(1, min(periods, max_periods))
-
-    now = datetime.now(timezone.utc)
-    period_starts = _period_starts(now, normalized_granularity, capped_periods)
+    normalized_granularity, period_starts = _statistics_period_starts(granularity, periods)
+    requests, events = _load_statistics_scope(period_starts[0])
     stats_map = {
         start: {
             "request_count": 0,
@@ -206,6 +199,7 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
             "rejected_requests": set(),
             "rejected_items": set(),
             "fulfillment_hours_total": 0.0,
+            "fulfillment_hours_values": [],
             "pdf_pages_total": 0,
             "valid_metadata_items": set(),
             "invalid_metadata_items": set(),
@@ -214,26 +208,6 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
         }
         for start in period_starts
     }
-
-    with session_scope() as session:
-        requests = list(
-            session.scalars(
-                select(DeliveryRequest)
-                .where(DeliveryRequest.created_at >= period_starts[0])
-                .options(selectinload(DeliveryRequest.items))
-                .order_by(DeliveryRequest.created_at.asc())
-            )
-        )
-        request_ids = [request.request_id for request in requests]
-        events = []
-        if request_ids:
-            events = list(
-                session.scalars(
-                    select(JobEvent)
-                    .where(JobEvent.request_id.in_(request_ids))
-                    .order_by(JobEvent.created_at.asc())
-                )
-            )
 
     events_by_request: dict[str, list[JobEvent]] = {}
     for event in events:
@@ -246,11 +220,13 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
             continue
         bucket["request_count"] += 1
         if request.notification_sent_at:
-            bucket["fulfilled_requests"] += 1
-            bucket["fulfillment_hours_total"] += max(
+            duration_hours = max(
                 0.0,
                 (request.notification_sent_at - request.created_at).total_seconds() / 3600,
             )
+            bucket["fulfilled_requests"] += 1
+            bucket["fulfillment_hours_total"] += duration_hours
+            bucket["fulfillment_hours_values"].append(duration_hours)
         bucket["pdf_pages_total"] += sum(
             item.pdf_page_count or 0
             for item in request.items
@@ -285,6 +261,7 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
         request_count = bucket["request_count"]
         fulfilled_requests = bucket["fulfilled_requests"]
         rejected_requests = len(bucket["rejected_requests"])
+        fulfillment_values = bucket["fulfillment_hours_values"]
         summaries.append(
             PeriodStatisticsSummary(
                 period_start=start,
@@ -300,6 +277,8 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
                     if fulfilled_requests
                     else None
                 ),
+                median_fulfillment_hours=_quantile(fulfillment_values, 0.5),
+                p90_fulfillment_hours=_quantile(fulfillment_values, 0.9),
                 pdf_pages_total=bucket["pdf_pages_total"],
                 avg_pdf_pages_per_fulfilled_request=(
                     round(bucket["pdf_pages_total"] / fulfilled_requests, 2)
@@ -313,6 +292,275 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
             )
         )
     return summaries
+
+
+def get_statistics_insights(granularity: str = "month", periods: int = 12) -> StatisticsInsightsSummary:
+    normalized_granularity, period_starts = _statistics_period_starts(granularity, periods)
+    requests, events = _load_statistics_scope(period_starts[0])
+    fulfilled_requests = _load_fulfilled_statistics_scope(period_starts[0])
+
+    fulfillment_values = [
+        max(0.0, (request.notification_sent_at - request.created_at).total_seconds() / 3600)
+        for request in requests
+        if request.notification_sent_at
+    ]
+    clarified_item_ids = {
+        event.request_item_id
+        for event in events
+        if event.event_type == "clarification_requested" and event.request_item_id is not None
+    }
+
+    clarification_by_language = _build_clarification_breakdown(
+        requests,
+        clarified_item_ids,
+        bucket_fn=lambda request, item: _statistics_language_bucket(request.form_language),
+        sort_key=lambda row: (
+            {"de": 0, "en": 1, "pl": 2}.get(row.bucket, 99),
+            row.bucket,
+        ),
+    )
+    clarification_by_item_type = _build_clarification_breakdown(
+        requests,
+        clarified_item_ids,
+        bucket_fn=lambda request, item: _statistics_item_type_bucket(item.item_type),
+        sort_key=lambda row: (-row.total_items, row.bucket),
+    )
+    requested_requests_by_language = _build_period_request_language_counts(
+        requests,
+        period_starts,
+        normalized_granularity,
+    )
+    requested_items_by_type = _build_period_item_type_counts(
+        requests,
+        period_starts,
+        normalized_granularity,
+        period_fn=lambda request: request.created_at,
+        item_filter=lambda item: True,
+    )
+    fulfilled_items_by_type = _build_period_item_type_counts(
+        fulfilled_requests,
+        period_starts,
+        normalized_granularity,
+        period_fn=lambda request: request.notification_sent_at,
+        item_filter=lambda item: item.status in {"DELIVERED", "READY_TO_NOTIFY"},
+    )
+
+    return StatisticsInsightsSummary(
+        median_fulfillment_hours=_quantile(fulfillment_values, 0.5),
+        p90_fulfillment_hours=_quantile(fulfillment_values, 0.9),
+        clarification_by_language=clarification_by_language,
+        clarification_by_item_type=clarification_by_item_type,
+        requested_requests_by_language=requested_requests_by_language,
+        requested_items_by_type=requested_items_by_type,
+        fulfilled_items_by_type=fulfilled_items_by_type,
+    )
+
+
+def _statistics_period_starts(granularity: str, periods: int) -> tuple[str, list[datetime]]:
+    normalized_granularity = granularity.strip().lower()
+    if normalized_granularity not in {"day", "week", "month", "year"}:
+        raise ValueError("Unsupported granularity")
+    if normalized_granularity == "day":
+        max_periods = 120
+    elif normalized_granularity == "week":
+        max_periods = 104
+    else:
+        max_periods = 60
+    capped_periods = max(1, min(periods, max_periods))
+    now = datetime.now(timezone.utc)
+    return normalized_granularity, _period_starts(now, normalized_granularity, capped_periods)
+
+
+def _load_statistics_scope(window_start: datetime) -> tuple[list[DeliveryRequest], list[JobEvent]]:
+    with session_scope() as session:
+        requests = list(
+            session.scalars(
+                select(DeliveryRequest)
+                .where(DeliveryRequest.created_at >= window_start)
+                .options(selectinload(DeliveryRequest.items))
+                .order_by(DeliveryRequest.created_at.asc())
+            )
+        )
+        request_ids = [request.request_id for request in requests]
+        events: list[JobEvent] = []
+        if request_ids:
+            events = list(
+                session.scalars(
+                    select(JobEvent)
+                    .where(JobEvent.request_id.in_(request_ids))
+                    .order_by(JobEvent.created_at.asc())
+                )
+            )
+    return requests, events
+
+
+def _load_fulfilled_statistics_scope(window_start: datetime) -> list[DeliveryRequest]:
+    with session_scope() as session:
+        return list(
+            session.scalars(
+                select(DeliveryRequest)
+                .where(DeliveryRequest.notification_sent_at >= window_start)
+                .options(selectinload(DeliveryRequest.items))
+                .order_by(DeliveryRequest.notification_sent_at.asc())
+            )
+        )
+
+
+def _build_clarification_breakdown(
+    requests: list[DeliveryRequest],
+    clarified_item_ids: set[int],
+    *,
+    bucket_fn,
+    sort_key,
+) -> list[ClarificationBreakdownSummary]:
+    buckets: dict[str, dict[str, object]] = {}
+    for request in requests:
+        for item in request.items:
+            bucket = bucket_fn(request, item)
+            entry = buckets.setdefault(bucket, {"total_items": 0, "clarified_item_ids": set()})
+            entry["total_items"] = int(entry["total_items"]) + 1
+            if item.id in clarified_item_ids:
+                clarified_ids = entry["clarified_item_ids"]
+                if isinstance(clarified_ids, set):
+                    clarified_ids.add(item.id)
+
+    summaries = [
+        ClarificationBreakdownSummary(
+            bucket=bucket,
+            total_items=int(entry["total_items"]),
+            clarified_items=len(entry["clarified_item_ids"]) if isinstance(entry["clarified_item_ids"], set) else 0,
+            clarification_rate=(
+                (
+                    len(entry["clarified_item_ids"]) / int(entry["total_items"])
+                    if int(entry["total_items"])
+                    else 0.0
+                )
+            ),
+        )
+        for bucket, entry in buckets.items()
+    ]
+    return sorted(summaries, key=sort_key)
+
+
+def _build_period_request_language_counts(
+    requests: list[DeliveryRequest],
+    period_starts: list[datetime],
+    granularity: str,
+) -> list[PeriodBucketCountSummary]:
+    counts_by_period: dict[datetime, dict[str, int]] = {start: {} for start in period_starts}
+    for request in requests:
+        period_start = _bucket_start(request.created_at, granularity)
+        bucket_counts = counts_by_period.get(period_start)
+        if bucket_counts is None:
+            continue
+        bucket = _statistics_language_bucket(request.form_language)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    summaries: list[PeriodBucketCountSummary] = []
+    for start in period_starts:
+        period_label = _period_label(start, granularity)
+        bucket_counts = counts_by_period[start]
+        for bucket, count in sorted(bucket_counts.items(), key=lambda entry: _statistics_language_sort_key(entry[0])):
+            summaries.append(
+                PeriodBucketCountSummary(
+                    period_start=start,
+                    period_label=period_label,
+                    bucket=bucket,
+                    count=count,
+                )
+            )
+    return summaries
+
+
+def _build_period_item_type_counts(
+    requests: list[DeliveryRequest],
+    period_starts: list[datetime],
+    granularity: str,
+    *,
+    period_fn,
+    item_filter,
+) -> list[PeriodBucketCountSummary]:
+    counts_by_period: dict[datetime, dict[str, int]] = {start: {} for start in period_starts}
+    for request in requests:
+        period_value = period_fn(request)
+        if period_value is None:
+            continue
+        period_start = _bucket_start(period_value, granularity)
+        bucket_counts = counts_by_period.get(period_start)
+        if bucket_counts is None:
+            continue
+        for item in request.items:
+            if not item_filter(item):
+                continue
+            bucket = _statistics_item_type_bucket(item.item_type)
+            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    summaries: list[PeriodBucketCountSummary] = []
+    for start in period_starts:
+        period_label = _period_label(start, granularity)
+        bucket_counts = counts_by_period[start]
+        for bucket, count in sorted(bucket_counts.items(), key=lambda entry: _statistics_item_type_sort_key(entry[0])):
+            summaries.append(
+                PeriodBucketCountSummary(
+                    period_start=start,
+                    period_label=period_label,
+                    bucket=bucket,
+                    count=count,
+                )
+            )
+    return summaries
+
+
+def _statistics_language_bucket(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized.startswith("de"):
+        return "de"
+    if normalized.startswith("en"):
+        return "en"
+    if normalized.startswith("pl"):
+        return "pl"
+    return "unknown"
+
+
+def _statistics_language_sort_key(value: str) -> tuple[int, str]:
+    priority = {"de": 0, "en": 1, "pl": 2, "unknown": 99}
+    normalized = _statistics_language_bucket(value)
+    return priority.get(normalized, 50), normalized
+
+
+def _statistics_item_type_bucket(value: str | None) -> str:
+    normalized = (value or "").strip()
+    return normalized or "unknown"
+
+
+def _statistics_item_type_sort_key(value: str) -> tuple[int, str]:
+    priority = {
+        "journalArticle": 0,
+        "bookSection": 1,
+        "book": 2,
+        "conferencePaper": 3,
+        "unknown": 99,
+    }
+    normalized = _statistics_item_type_bucket(value)
+    return priority.get(normalized, 50), normalized
+
+
+def _quantile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 2)
+    position = (len(ordered) - 1) * percentile
+    lower_index = math.floor(position)
+    upper_index = math.ceil(position)
+    lower_value = ordered[lower_index]
+    upper_value = ordered[upper_index]
+    if lower_index == upper_index:
+        return round(lower_value, 2)
+    fraction = position - lower_index
+    interpolated = lower_value + (upper_value - lower_value) * fraction
+    return round(interpolated, 2)
 
 
 def list_email_templates() -> list[EmailTemplateSummary]:

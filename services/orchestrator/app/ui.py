@@ -20,6 +20,26 @@ REQUEST_QUEUE_SNAPSHOT_KEY = "request-queue-request-ids"
 
 SUPPORTED_MESSAGE_LANGUAGES = {"de", "en", "pl"}
 LANGUAGE_LABELS = {"de": "German", "en": "English", "pl": "Polish"}
+LANGUAGE_CHART_COLORS = {
+    "German": "#4c7a6f",
+    "English": "#456990",
+    "Polish": "#c17c00",
+    "Unknown": "#8a8f98",
+}
+ITEM_TYPE_LABELS = {
+    "journalArticle": "Journal article",
+    "bookSection": "Book section",
+    "book": "Book",
+    "conferencePaper": "Conference paper",
+    "unknown": "Unknown",
+}
+ITEM_TYPE_CHART_COLORS = {
+    "Journal article": "#4c7a6f",
+    "Book section": "#b14d31",
+    "Book": "#456990",
+    "Conference paper": "#c17c00",
+    "Unknown": "#8a8f98",
+}
 OPERATOR_TEXT_TEMPLATE_KIND_LABELS = {
     "rejection_reason": "Rejection reasons",
     "clarification_detail": "Clarification details",
@@ -519,6 +539,17 @@ def fetch_statistics(granularity: str, periods: int) -> list[dict]:
     return response.json()
 
 
+def fetch_statistics_insights(granularity: str, periods: int) -> dict:
+    response = requests.get(
+        f"{API_BASE_URL}/statistics/insights",
+        headers=_headers(),
+        params={"granularity": granularity, "periods": periods},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def retry_request(request_id: str) -> None:
     response = requests.post(f"{API_BASE_URL}/requests/{request_id}/retry", headers=_headers(), timeout=30)
     response.raise_for_status()
@@ -766,6 +797,103 @@ def _render_grouped_bar_chart(
         .properties(title=title)
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+def _render_stacked_bar_chart(
+    rows: list[dict],
+    title: str,
+    color_scale: dict[str, str] | None = None,
+    legend_title: str = "Category",
+    x_title: str = "Period",
+    y_title: str = "Count",
+) -> None:
+    dataframe = pd.DataFrame(rows)
+    color = alt.Color("series:N")
+    if color_scale:
+        color = alt.Color(
+            "series:N",
+            scale=alt.Scale(
+                domain=list(color_scale.keys()),
+                range=list(color_scale.values()),
+            ),
+            legend=alt.Legend(title=legend_title),
+        )
+    else:
+        color = alt.Color("series:N", legend=alt.Legend(title=legend_title))
+    chart = (
+        alt.Chart(dataframe)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .encode(
+            x=alt.X("period:N", sort=None, axis=alt.Axis(labelAngle=-35), title=x_title),
+            y=alt.Y("value:Q", stack="zero", title=y_title),
+            color=color,
+            order=alt.Order("series:N"),
+            tooltip=[
+                alt.Tooltip("period:N", title=x_title),
+                alt.Tooltip("series:N", title=legend_title),
+                alt.Tooltip("value:Q", title=y_title),
+            ],
+        )
+        .properties(title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_clarification_breakdown_chart(
+    rows: list[dict],
+    title: str,
+    bucket_title: str,
+    color: str,
+) -> None:
+    dataframe = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(dataframe)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2, color=color)
+        .encode(
+            x=alt.X("bucket_label:N", sort="-y", axis=alt.Axis(labelAngle=-35), title=bucket_title),
+            y=alt.Y("clarification_rate_pct:Q", title="Clarification rate (%)"),
+            tooltip=[
+                alt.Tooltip("bucket_label:N", title=bucket_title),
+                alt.Tooltip("clarified_items:Q", title="Clarified items"),
+                alt.Tooltip("total_items:Q", title="Total items"),
+                alt.Tooltip("clarification_rate_pct:Q", title="Clarification rate (%)"),
+            ],
+        )
+        .properties(title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _item_type_label(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    return ITEM_TYPE_LABELS.get(normalized, normalized or ITEM_TYPE_LABELS["unknown"])
+
+
+def _language_label(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return LANGUAGE_LABELS.get(normalized, "Unknown")
+
+
+def _item_type_color_scale(series_labels: list[str]) -> dict[str, str]:
+    fallback_palette = [
+        "#7b5ea7",
+        "#5d7285",
+        "#9a6d38",
+        "#2E8B57",
+        "#9b2c2c",
+        "#D4A017",
+    ]
+    color_scale: dict[str, str] = {}
+    fallback_index = 0
+    for label in series_labels:
+        if label in color_scale:
+            continue
+        if label in ITEM_TYPE_CHART_COLORS:
+            color_scale[label] = ITEM_TYPE_CHART_COLORS[label]
+            continue
+        color_scale[label] = fallback_palette[fallback_index % len(fallback_palette)]
+        fallback_index += 1
+    return color_scale
 
 
 st.set_page_config(page_title="Document Delivery Ops", page_icon="DD", layout="wide")
@@ -1359,6 +1487,7 @@ def _render_statistics_page() -> None:
         )
 
     stats = fetch_statistics(granularity=granularity, periods=periods)
+    insights = fetch_statistics_insights(granularity=granularity, periods=periods)
     if not stats:
         st.info("No statistics available yet.")
         return
@@ -1378,22 +1507,28 @@ def _render_statistics_page() -> None:
     total_reused = sum(row["reused_items"] for row in stats)
     total_pdf_pages = sum(row["pdf_pages_total"] for row in stats)
     avg_pdf_pages = round(total_pdf_pages / total_fulfilled, 2) if total_fulfilled else None
+    median_duration = insights.get("median_fulfillment_hours")
+    p90_duration = insights.get("p90_fulfillment_hours")
 
-    metrics = st.columns(6)
-    metrics[0].metric("Requests", total_requests)
-    metrics[1].metric("Fulfillment rate", f"{fulfillment_rate * 100:.1f}%")
-    metrics[2].metric("Rejection rate", f"{rejection_rate * 100:.1f}%")
-    metrics[3].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
-    metrics[4].metric("Delivered pages", total_pdf_pages)
-    metrics[5].metric("Pages / fulfilled req", f"{avg_pdf_pages:.2f}" if avg_pdf_pages is not None else "n/a")
+    primary_metrics = st.columns(6)
+    primary_metrics[0].metric("Requests", total_requests)
+    primary_metrics[1].metric("Fulfillment rate", f"{fulfillment_rate * 100:.1f}%")
+    primary_metrics[2].metric("Rejection rate", f"{rejection_rate * 100:.1f}%")
+    primary_metrics[3].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
+    primary_metrics[4].metric("Median fulfillment", f"{median_duration:.1f}" if median_duration is not None else "n/a")
+    primary_metrics[5].metric("P90 fulfillment", f"{p90_duration:.1f}" if p90_duration is not None else "n/a")
+
+    secondary_metrics = st.columns(5)
+    secondary_metrics[0].metric("Delivered pages", total_pdf_pages)
+    secondary_metrics[1].metric("Pages / fulfilled req", f"{avg_pdf_pages:.2f}" if avg_pdf_pages is not None else "n/a")
+    secondary_metrics[2].metric("Clarification requests", total_clarifications)
+    secondary_metrics[3].metric("Invalid metadata", total_invalid_metadata)
+    secondary_metrics[4].metric("Reused items", total_reused)
 
     st.caption(
-        f"Clarification requests in selected periods: {total_clarifications} | "
         f"Valid metadata items: {sum(row['valid_metadata_items'] for row in stats)} | "
         f"Rejected requests: {total_rejected_requests} | "
-        f"Rejected items: {total_rejected_items} | "
-        f"Invalid metadata items: {total_invalid_metadata} | "
-        f"Reused items: {total_reused}"
+        f"Rejected items: {total_rejected_items}"
     )
 
     table_rows = [
@@ -1406,6 +1541,8 @@ def _render_statistics_page() -> None:
             "fulfillment_rate_pct": round(row["fulfillment_rate"] * 100, 1),
             "rejection_rate_pct": round(row["rejection_rate"] * 100, 1),
             "avg_fulfillment_hours": row["avg_fulfillment_hours"],
+            "median_fulfillment_hours": row["median_fulfillment_hours"],
+            "p90_fulfillment_hours": row["p90_fulfillment_hours"],
             "pdf_pages_total": row["pdf_pages_total"],
             "avg_pdf_pages_per_fulfilled_request": row["avg_pdf_pages_per_fulfilled_request"],
             "valid_metadata_items": row["valid_metadata_items"],
@@ -1415,16 +1552,82 @@ def _render_statistics_page() -> None:
         }
         for row in stats
     ]
+    duration_rows = []
+    for row in table_rows:
+        for series, field in (
+            ("Average", "avg_fulfillment_hours"),
+            ("Median", "median_fulfillment_hours"),
+            ("P90", "p90_fulfillment_hours"),
+        ):
+            value = row[field]
+            if value is None:
+                continue
+            duration_rows.append({"period": row["period"], "series": series, "value": value})
+
+    clarification_by_language = [
+        {
+            "bucket_label": LANGUAGE_LABELS.get(entry["bucket"], str(entry["bucket"]).title()),
+            "clarified_items": entry["clarified_items"],
+            "total_items": entry["total_items"],
+            "clarification_rate_pct": round(entry["clarification_rate"] * 100, 1),
+        }
+        for entry in insights.get("clarification_by_language", [])
+    ]
+    clarification_by_item_type = [
+        {
+            "bucket_label": _item_type_label(entry["bucket"]),
+            "clarified_items": entry["clarified_items"],
+            "total_items": entry["total_items"],
+            "clarification_rate_pct": round(entry["clarification_rate"] * 100, 1),
+        }
+        for entry in insights.get("clarification_by_item_type", [])
+    ]
+    requested_requests_by_language = [
+        {
+            "period": entry["period_label"],
+            "series": _language_label(entry["bucket"]),
+            "value": entry["count"],
+        }
+        for entry in insights.get("requested_requests_by_language", [])
+    ]
+    requested_items_by_type = [
+        {
+            "period": entry["period_label"],
+            "series": _item_type_label(entry["bucket"]),
+            "value": entry["count"],
+        }
+        for entry in insights.get("requested_items_by_type", [])
+    ]
+    fulfilled_items_by_type = [
+        {
+            "period": entry["period_label"],
+            "series": _item_type_label(entry["bucket"]),
+            "value": entry["count"],
+        }
+        for entry in insights.get("fulfilled_items_by_type", [])
+    ]
+    request_language_series_labels: list[str] = []
+    for row in requested_requests_by_language:
+        if row["series"] not in request_language_series_labels:
+            request_language_series_labels.append(row["series"])
+    request_language_color_scale = {
+        label: LANGUAGE_CHART_COLORS.get(label, "#8a8f98") for label in request_language_series_labels
+    }
+    item_type_series_labels: list[str] = []
+    for rows in (requested_items_by_type, fulfilled_items_by_type):
+        for row in rows:
+            if row["series"] not in item_type_series_labels:
+                item_type_series_labels.append(row["series"])
+    item_type_color_scale = _item_type_color_scale(item_type_series_labels)
 
     st.subheader("Charts")
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
-        _render_bar_chart(
-            table_rows,
-            "period",
-            "requests",
-            "Requests per Period",
-            "#b14d31",
+        _render_stacked_bar_chart(
+            requested_requests_by_language,
+            "Requests per Period by Language",
+            color_scale=request_language_color_scale,
+            legend_title="Language",
             y_title="Requests",
         )
     with chart_col2:
@@ -1457,6 +1660,18 @@ def _render_statistics_page() -> None:
     secondary_chart_col1, secondary_chart_col2 = st.columns(2)
     with secondary_chart_col1:
         _render_grouped_bar_chart(
+            duration_rows,
+            "Fulfillment Time Distribution",
+            color_scale={
+                "Average": "#4c7a6f",
+                "Median": "#456990",
+                "P90": "#c17c00",
+            },
+            legend_title="Metric",
+            y_title="Hours",
+        )
+    with secondary_chart_col2:
+        _render_grouped_bar_chart(
             outcome_rows,
             "Request Outcomes",
             color_scale={
@@ -1466,7 +1681,8 @@ def _render_statistics_page() -> None:
             legend_title="Request outcome",
             y_title="Requests",
         )
-    with secondary_chart_col2:
+    tertiary_chart_col1, tertiary_chart_col2 = st.columns(2)
+    with tertiary_chart_col1:
         _render_grouped_bar_chart(
             metadata_rows,
             "Metadata Outcomes",
@@ -1478,8 +1694,23 @@ def _render_statistics_page() -> None:
             legend_title="Metadata status",
             y_title="Items",
         )
-    tertiary_chart_col1, tertiary_chart_col2 = st.columns(2)
-    with tertiary_chart_col1:
+    with tertiary_chart_col2:
+        _render_clarification_breakdown_chart(
+            clarification_by_language,
+            "Clarification Rate by Language",
+            bucket_title="Language",
+            color="#5d7285",
+        )
+
+    quaternary_chart_col1, quaternary_chart_col2 = st.columns(2)
+    with quaternary_chart_col1:
+        _render_clarification_breakdown_chart(
+            clarification_by_item_type,
+            "Clarification Rate by Item Type",
+            bucket_title="Item type",
+            color="#9a6d38",
+        )
+    with quaternary_chart_col2:
         _render_bar_chart(
             table_rows,
             "period",
@@ -1488,7 +1719,27 @@ def _render_statistics_page() -> None:
             "#7b5ea7",
             y_title="Reused items",
         )
-    with tertiary_chart_col2:
+
+    quinary_chart_col1, quinary_chart_col2 = st.columns(2)
+    with quinary_chart_col1:
+        _render_grouped_bar_chart(
+            requested_items_by_type,
+            "Requested Items by Type",
+            color_scale=item_type_color_scale,
+            legend_title="Item type",
+            y_title="Requested items",
+        )
+    with quinary_chart_col2:
+        _render_grouped_bar_chart(
+            fulfilled_items_by_type,
+            "Fulfilled Items by Type",
+            color_scale=item_type_color_scale,
+            legend_title="Item type",
+            y_title="Fulfilled items",
+        )
+
+    senary_chart_col1, senary_chart_col2 = st.columns(2)
+    with senary_chart_col1:
         _render_bar_chart(
             table_rows,
             "period",
@@ -1497,9 +1748,7 @@ def _render_statistics_page() -> None:
             "#9b2c2c",
             y_title="Rejected items",
         )
-
-    quaternary_chart_col1, quaternary_chart_col2 = st.columns(2)
-    with quaternary_chart_col1:
+    with senary_chart_col2:
         _render_bar_chart(
             table_rows,
             "period",
@@ -1507,15 +1756,6 @@ def _render_statistics_page() -> None:
             "Delivered PDF Pages",
             "#456990",
             y_title="Pages",
-        )
-    with quaternary_chart_col2:
-        _render_bar_chart(
-            table_rows,
-            "period",
-            "avg_pdf_pages_per_fulfilled_request",
-            "Pages per Fulfilled Request",
-            "#c17c00",
-            y_title="Pages / request",
         )
 
     st.subheader("Table")
