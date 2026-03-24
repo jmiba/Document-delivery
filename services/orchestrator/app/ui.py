@@ -1033,6 +1033,7 @@ def _render_requests_page() -> None:
             "confidence": item["normalization_confidence"],
             "zotero_item_key": item["zotero_item_key"],
             "attachment_state": _attachment_state(item),
+            "pdf_pages": item["pdf_page_count"],
             "download_url": item["download_url"],
             "expires_on": item["expires_on"],
             "last_error": item["last_error"],
@@ -1375,20 +1376,24 @@ def _render_statistics_page() -> None:
     total_invalid_metadata = sum(row["invalid_metadata_items"] for row in stats)
     total_clarifications = sum(row["clarification_requests"] for row in stats)
     total_reused = sum(row["reused_items"] for row in stats)
+    total_pdf_pages = sum(row["pdf_pages_total"] for row in stats)
+    avg_pdf_pages = round(total_pdf_pages / total_fulfilled, 2) if total_fulfilled else None
 
     metrics = st.columns(6)
     metrics[0].metric("Requests", total_requests)
     metrics[1].metric("Fulfillment rate", f"{fulfillment_rate * 100:.1f}%")
     metrics[2].metric("Rejection rate", f"{rejection_rate * 100:.1f}%")
     metrics[3].metric("Avg fulfillment hours", f"{avg_duration:.1f}" if avg_duration is not None else "n/a")
-    metrics[4].metric("Invalid metadata", total_invalid_metadata)
-    metrics[5].metric("Reused items", total_reused)
+    metrics[4].metric("Delivered pages", total_pdf_pages)
+    metrics[5].metric("Pages / fulfilled req", f"{avg_pdf_pages:.2f}" if avg_pdf_pages is not None else "n/a")
 
     st.caption(
         f"Clarification requests in selected periods: {total_clarifications} | "
         f"Valid metadata items: {sum(row['valid_metadata_items'] for row in stats)} | "
         f"Rejected requests: {total_rejected_requests} | "
-        f"Rejected items: {total_rejected_items}"
+        f"Rejected items: {total_rejected_items} | "
+        f"Invalid metadata items: {total_invalid_metadata} | "
+        f"Reused items: {total_reused}"
     )
 
     table_rows = [
@@ -1401,6 +1406,8 @@ def _render_statistics_page() -> None:
             "fulfillment_rate_pct": round(row["fulfillment_rate"] * 100, 1),
             "rejection_rate_pct": round(row["rejection_rate"] * 100, 1),
             "avg_fulfillment_hours": row["avg_fulfillment_hours"],
+            "pdf_pages_total": row["pdf_pages_total"],
+            "avg_pdf_pages_per_fulfilled_request": row["avg_pdf_pages_per_fulfilled_request"],
             "valid_metadata_items": row["valid_metadata_items"],
             "invalid_metadata_items": row["invalid_metadata_items"],
             "clarification_requests": row["clarification_requests"],
@@ -1489,6 +1496,26 @@ def _render_statistics_page() -> None:
             "Rejected Items",
             "#9b2c2c",
             y_title="Rejected items",
+        )
+
+    quaternary_chart_col1, quaternary_chart_col2 = st.columns(2)
+    with quaternary_chart_col1:
+        _render_bar_chart(
+            table_rows,
+            "period",
+            "pdf_pages_total",
+            "Delivered PDF Pages",
+            "#456990",
+            y_title="Pages",
+        )
+    with quaternary_chart_col2:
+        _render_bar_chart(
+            table_rows,
+            "period",
+            "avg_pdf_pages_per_fulfilled_request",
+            "Pages per Fulfilled Request",
+            "#c17c00",
+            y_title="Pages / request",
         )
 
     st.subheader("Table")

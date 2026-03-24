@@ -61,6 +61,7 @@ def _migrate_sqlite() -> None:
             "series": "ALTER TABLE request_items ADD COLUMN series TEXT",
             "edition": "ALTER TABLE request_items ADD COLUMN edition VARCHAR(64)",
             "isbn": "ALTER TABLE request_items ADD COLUMN isbn VARCHAR(64)",
+            "pdf_page_count": "ALTER TABLE request_items ADD COLUMN pdf_page_count INTEGER",
         },
         "operator_text_template_entries": {
             "group_key": "ALTER TABLE operator_text_template_entries ADD COLUMN group_key VARCHAR(128)",

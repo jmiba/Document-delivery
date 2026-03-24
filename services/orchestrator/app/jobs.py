@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from pypdf import PdfReader
 from sqlalchemy import case, delete, select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -205,6 +206,7 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
             "rejected_requests": set(),
             "rejected_items": set(),
             "fulfillment_hours_total": 0.0,
+            "pdf_pages_total": 0,
             "valid_metadata_items": set(),
             "invalid_metadata_items": set(),
             "clarification_requests": set(),
@@ -249,6 +251,11 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
                 0.0,
                 (request.notification_sent_at - request.created_at).total_seconds() / 3600,
             )
+        bucket["pdf_pages_total"] += sum(
+            item.pdf_page_count or 0
+            for item in request.items
+            if item.status == "DELIVERED" and item.pdf_page_count is not None
+        )
         if request.status == "REJECTED":
             bucket["rejected_requests"].add(request.request_id)
         rejected_item_ids = {item.id for item in request.items if item.status == "REJECTED"}
@@ -290,6 +297,12 @@ def get_period_statistics(granularity: str = "month", periods: int = 12) -> list
                 rejection_rate=(rejected_requests / request_count) if request_count else 0.0,
                 avg_fulfillment_hours=(
                     round(bucket["fulfillment_hours_total"] / fulfilled_requests, 2)
+                    if fulfilled_requests
+                    else None
+                ),
+                pdf_pages_total=bucket["pdf_pages_total"],
+                avg_pdf_pages_per_fulfilled_request=(
+                    round(bucket["pdf_pages_total"] / fulfilled_requests, 2)
                     if fulfilled_requests
                     else None
                 ),
@@ -1222,6 +1235,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             uploaded_scan_filename=item.uploaded_scan_filename,
             download_url=item.download_url,
             expires_on=item.expires_on,
+            pdf_page_count=item.pdf_page_count,
             download_deleted_at=item.download_deleted_at,
             last_error=item.last_error,
             review_notes=item.review_notes,
@@ -1532,6 +1546,7 @@ def _process_delivery_stage(snapshot: dict) -> None:
     processed_pdf, ocr_result = _maybe_run_ocr(source_pdf)
     if ocr_result is not None:
         _log_ocr_event(snapshot["request_id"], snapshot["item_id"], ocr_result)
+    pdf_page_count = _count_pdf_pages(processed_pdf)
 
     if uploaded_scan is not None and not attachment_key:
         if snapshot["zotero_item_key"]:
@@ -1578,6 +1593,7 @@ def _process_delivery_stage(snapshot: dict) -> None:
         zotero_attachment_key=attachment_key,
         download_url=download_url,
         expires_on=expires_on,
+        pdf_page_count=pdf_page_count,
         nextcloud_remote_path=remote_path,
         download_deleted_at=None,
         status="READY_TO_NOTIFY",
@@ -1924,6 +1940,13 @@ def _append_rejection_note(existing: str | None, reason: str) -> str:
 
 def _delivery_remote_filename(request_id: str, item_index: int) -> str:
     return f"{request_id}-{item_index}.pdf"
+
+
+def _count_pdf_pages(pdf_path: Path) -> int:
+    try:
+        return len(PdfReader(str(pdf_path)).pages)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to inspect PDF page count: {exc}") from exc
 
 
 def _snapshot_to_bib(snapshot: dict) -> BibliographicData:

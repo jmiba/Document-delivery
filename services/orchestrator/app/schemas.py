@@ -246,6 +246,7 @@ class RequestItemSummary(BaseModel):
     uploaded_scan_filename: str | None
     download_url: str | None
     expires_on: str | None
+    pdf_page_count: int | None
     download_deleted_at: datetime | None = None
     last_error: str | None
     review_notes: str | None
@@ -290,6 +291,8 @@ class PeriodStatisticsSummary(BaseModel):
     fulfillment_rate: float
     rejection_rate: float
     avg_fulfillment_hours: float | None
+    pdf_pages_total: int
+    avg_pdf_pages_per_fulfilled_request: float | None
     valid_metadata_items: int
     invalid_metadata_items: int
     clarification_requests: int

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,6 +12,70 @@ FIELD_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?P<value>\{(?:[^{}]|(?:\{[^{}]*\}))*\}|\"(?:[^\"\\\\]|\\\\.)*\"|[^,\n]+)",
     re.DOTALL,
 )
+LATEX_ACCENT_RE = re.compile(
+    r"\\(?P<accent>[\"'`^~=.Hckuvbdr])\s*(?:\{\s*)?(?P<letter>\\i|\\j|[A-Za-z])(?:\s*\})?",
+)
+
+LATEX_SPECIAL_REPLACEMENTS = {
+    r"\&": "&",
+    r"\%": "%",
+    r"\_": "_",
+    r"\#": "#",
+    r"\$": "$",
+    r"\textquotedblleft": '"',
+    r"\textquotedblright": '"',
+    r"\textquoteleft": "'",
+    r"\textquoteright": "'",
+    r"\textendash": "-",
+    r"\textemdash": "-",
+    r"\ss": "ss",
+    r"\ae": "ae",
+    r"\AE": "AE",
+    r"\oe": "oe",
+    r"\OE": "OE",
+    r"\aa": "aa",
+    r"\AA": "AA",
+    r"\o": "o",
+    r"\O": "O",
+    r"\l": "l",
+    r"\L": "L",
+}
+
+LATEX_COMBINING_MARKS = {
+    '"': "\u0308",
+    "'": "\u0301",
+    "`": "\u0300",
+    "^": "\u0302",
+    "~": "\u0303",
+    "=": "\u0304",
+    ".": "\u0307",
+    "H": "\u030B",
+    "c": "\u0327",
+    "k": "\u0328",
+    "u": "\u0306",
+    "v": "\u030C",
+    "b": "\u0331",
+    "d": "\u0323",
+    "r": "\u030A",
+}
+
+DOUBLE_QUOTE_TRANSLATION = str.maketrans({
+    "„": '"',
+    "“": '"',
+    "”": '"',
+    "‟": '"',
+    "«": '"',
+    "»": '"',
+})
+
+SINGLE_QUOTE_TRANSLATION = str.maketrans({
+    "‘": "'",
+    "’": "'",
+    "‚": "'",
+    "‛": "'",
+    "‹": "'",
+    "›": "'",
+})
 
 
 def parse_bibtex_entry(raw: str) -> dict:
@@ -73,11 +138,31 @@ def _collapse_whitespace(value: str) -> str:
 
 def _normalize_bibtex_text(value: str) -> str:
     cleaned = value or ""
+    cleaned = _decode_latex_accents(cleaned)
+    for source, target in LATEX_SPECIAL_REPLACEMENTS.items():
+        cleaned = cleaned.replace(source, target)
+    cleaned = cleaned.replace("``", '"').replace("''", '"')
+    cleaned = cleaned.replace("~", " ")
+    cleaned = cleaned.replace(r"\\", "\\")
+    cleaned = cleaned.replace(r"\"", '"')
+    cleaned = cleaned.translate(DOUBLE_QUOTE_TRANSLATION)
+    cleaned = cleaned.translate(SINGLE_QUOTE_TRANSLATION)
     # Remove BibTeX protective braces while preserving their contents.
     cleaned = cleaned.replace("{", "").replace("}", "")
-    # Unescape a small set of common BibTeX sequences that should survive as plain text.
-    cleaned = cleaned.replace(r"\&", "&")
     return cleaned.strip()
+
+
+def _decode_latex_accents(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        accent = match.group("accent")
+        letter = match.group("letter")
+        base = {"\\i": "i", "\\j": "j"}.get(letter, letter)
+        mark = LATEX_COMBINING_MARKS.get(accent)
+        if not mark:
+            return base
+        return unicodedata.normalize("NFC", f"{base}{mark}")
+
+    return LATEX_ACCENT_RE.sub(replace, value or "")
 
 
 def _clean(value: str | None) -> str:

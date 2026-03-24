@@ -74,6 +74,7 @@ class RequestItem(Base):
     citation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_on: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pdf_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nextcloud_remote_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
