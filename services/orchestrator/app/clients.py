@@ -232,15 +232,21 @@ class NextcloudClient:
         self.dav_base_path = settings.nextcloud_dav_base_path
         self.root = settings.nextcloud_root_path.rstrip("/")
 
-    def upload_pdf(self, local_path: Path, remote_filename: str) -> str:
-        remote_path = f"{self.root}/{remote_filename}".replace("//", "/")
+    def remote_path_for_filename(self, remote_filename: str) -> str:
+        return f"{self.root}/{remote_filename}".replace("//", "/")
+
+    def _dav_url(self, remote_path: str) -> str:
         quoted_path = quote(remote_path)
         encoded_username = quote(self.username, safe="")
         dav_base_path = self.dav_base_path.replace("{username}", encoded_username).strip()
         if not dav_base_path.startswith("/"):
             dav_base_path = f"/{dav_base_path}"
         dav_base_path = dav_base_path.rstrip("/")
-        upload_url = f"{self.base}{dav_base_path}{quoted_path}"
+        return f"{self.base}{dav_base_path}{quoted_path}"
+
+    def upload_pdf(self, local_path: Path, remote_filename: str) -> str:
+        remote_path = self.remote_path_for_filename(remote_filename)
+        upload_url = self._dav_url(remote_path)
 
         with local_path.open("rb") as handle:
             response = requests.put(
@@ -271,6 +277,17 @@ class NextcloudClient:
         payload = response.json()
         public_url = payload["ocs"]["data"]["url"]
         return public_url, expires_at.strftime("%Y-%m-%d")
+
+    def delete_file(self, remote_path: str) -> bool:
+        response = requests.delete(
+            self._dav_url(remote_path),
+            auth=(self.username, self.password),
+            timeout=30,
+        )
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        return True
 
 
 class ZoteroClient:

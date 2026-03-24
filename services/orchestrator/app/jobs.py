@@ -1093,9 +1093,10 @@ def remove_uploaded_scan_for_item(request_id: str, item_id: int) -> bool:
 
 
 def process_next_item() -> bool:
+    handled_cleanup = _cleanup_expired_delivery_file()
     snapshot = _claim_next_item_snapshot()
     if not snapshot:
-        return False
+        return handled_cleanup
 
     status = snapshot["status"]
     try:
@@ -1119,6 +1120,78 @@ def process_next_item() -> bool:
     except Exception as exc:
         _mark_item_failed(snapshot, exc)
         return True
+
+
+def _cleanup_expired_delivery_file() -> bool:
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    with session_scope() as session:
+        item = session.scalar(
+            select(RequestItem)
+            .join(RequestItem.request)
+            .options(joinedload(RequestItem.request))
+            .where(
+                (RequestItem.status == "DELIVERED") | (RequestItem.status == "READY_TO_NOTIFY"),
+                DeliveryRequest.notification_sent_at.is_not(None),
+                RequestItem.download_url.is_not(None),
+                RequestItem.expires_on.is_not(None),
+                RequestItem.nextcloud_remote_path.is_not(None),
+                RequestItem.download_deleted_at.is_(None),
+                RequestItem.expires_on < today_iso,
+            )
+            .order_by(RequestItem.expires_on.asc(), RequestItem.updated_at.asc())
+        )
+        if not item:
+            return False
+        snapshot = {
+            "item_id": item.id,
+            "request_id": item.request.request_id,
+            "expires_on": item.expires_on,
+            "nextcloud_remote_path": item.nextcloud_remote_path,
+        }
+
+    nextcloud = NextcloudClient()
+    remote_path = snapshot["nextcloud_remote_path"]
+    try:
+        file_existed = nextcloud.delete_file(remote_path)
+    except Exception as exc:
+        with session_scope() as session:
+            item = session.get(RequestItem, snapshot["item_id"])
+            if not item or item.download_deleted_at is not None or not item.download_url:
+                return False
+            log_event(
+                session,
+                request_id=snapshot["request_id"],
+                request_item_id=item.id,
+                event_type="delivery_file_delete_failed",
+                payload={
+                    "remote_path": remote_path,
+                    "expires_on": snapshot["expires_on"],
+                    "error": str(exc),
+                },
+                level="WARNING",
+            )
+        return False
+
+    with session_scope() as session:
+        item = session.get(RequestItem, snapshot["item_id"])
+        if not item or item.download_deleted_at is not None or not item.request:
+            return False
+        item.download_url = None
+        item.nextcloud_remote_path = None
+        item.download_deleted_at = datetime.now(timezone.utc)
+        _sync_request_status(session, item.request)
+        log_event(
+            session,
+            request_id=item.request.request_id,
+            request_item_id=item.id,
+            event_type="delivery_file_deleted",
+            payload={
+                "remote_path": remote_path,
+                "expires_on": item.expires_on,
+                "file_existed": file_existed,
+            },
+        )
+    return True
 
 
 def build_request_summary(request: DeliveryRequest) -> RequestSummary:
@@ -1149,6 +1222,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             uploaded_scan_filename=item.uploaded_scan_filename,
             download_url=item.download_url,
             expires_on=item.expires_on,
+            download_deleted_at=item.download_deleted_at,
             last_error=item.last_error,
             review_notes=item.review_notes,
             raw_json=item.raw_json,
@@ -1484,7 +1558,7 @@ def _process_delivery_stage(snapshot: dict) -> None:
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=snapshot["delivery_days"])
-    remote_filename = f"{snapshot['request_id']}-{snapshot['item_index']}.pdf"
+    remote_filename = _delivery_remote_filename(snapshot["request_id"], snapshot["item_index"])
     delivery_pdf = prepend_delivery_cover_page(
         processed_pdf,
         work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.delivery.pdf",
@@ -1504,6 +1578,8 @@ def _process_delivery_stage(snapshot: dict) -> None:
         zotero_attachment_key=attachment_key,
         download_url=download_url,
         expires_on=expires_on,
+        nextcloud_remote_path=remote_path,
+        download_deleted_at=None,
         status="READY_TO_NOTIFY",
         next_poll_at=datetime.now(timezone.utc),
     )
@@ -1838,6 +1914,10 @@ def _append_rejection_note(existing: str | None, reason: str) -> str:
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
     block = f"Item rejected ({timestamp}):\n{reason}"
     return f"{existing.rstrip()}\n\n{block}" if existing and existing.strip() else block
+
+
+def _delivery_remote_filename(request_id: str, item_index: int) -> str:
+    return f"{request_id}-{item_index}.pdf"
 
 
 def _snapshot_to_bib(snapshot: dict) -> BibliographicData:

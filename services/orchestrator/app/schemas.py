@@ -246,6 +246,7 @@ class RequestItemSummary(BaseModel):
     uploaded_scan_filename: str | None
     download_url: str | None
     expires_on: str | None
+    download_deleted_at: datetime | None = None
     last_error: str | None
     review_notes: str | None
     raw_json: str | None

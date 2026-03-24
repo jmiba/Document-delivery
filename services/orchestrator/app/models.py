@@ -74,6 +74,8 @@ class RequestItem(Base):
     citation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_on: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    nextcloud_remote_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    download_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
