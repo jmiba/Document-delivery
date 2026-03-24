@@ -1864,18 +1864,24 @@ def _update_item(item_id: int, **changes) -> None:
         item = session.get(RequestItem, item_id)
         if not item:
             return
+        event_changes: dict[str, str | None] = {}
         for key, value in changes.items():
+            previous = _serialize_value(getattr(item, key))
             setattr(item, key, value)
+            current = _serialize_value(getattr(item, key))
+            if previous != current:
+                event_changes[key] = current
         request = item.request
         request.last_error = None
         _sync_request_status(session, request)
-        log_event(
-            session,
-            request_id=request.request_id,
-            request_item_id=item.id,
-            event_type="item_updated",
-            payload={key: _serialize_value(value) for key, value in changes.items()},
-        )
+        if event_changes and set(event_changes) != {"next_poll_at"}:
+            log_event(
+                session,
+                request_id=request.request_id,
+                request_item_id=item.id,
+                event_type="item_updated",
+                payload=event_changes,
+            )
 
 
 def _sync_request_status(session, request: DeliveryRequest) -> None:
