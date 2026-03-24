@@ -325,3 +325,33 @@ class OperatorTextTemplateEntrySummary(BaseModel):
     label: str
     text: str
     sort_order: int
+
+
+class OperatorTextTemplateGroupInput(BaseModel):
+    operator_label: str = Field(min_length=1)
+    text_de: str = ""
+    text_en: str = ""
+    text_pl: str = ""
+
+    @model_validator(mode="after")
+    def validate_texts(self):
+        self.operator_label = self.operator_label.strip()
+        self.text_de = self.text_de.strip()
+        self.text_en = self.text_en.strip()
+        self.text_pl = self.text_pl.strip()
+        if not any([self.text_de, self.text_en, self.text_pl]):
+            raise ValueError("At least one localized text is required.")
+        return self
+
+
+class ReplaceOperatorTextTemplateGroupsRequest(BaseModel):
+    entries: list[OperatorTextTemplateGroupInput] = Field(default_factory=list)
+
+
+class OperatorTextTemplateGroupSummary(BaseModel):
+    template_kind: str
+    operator_label: str
+    text_de: str = ""
+    text_en: str = ""
+    text_pl: str = ""
+    sort_order: int

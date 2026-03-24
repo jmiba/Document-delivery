@@ -280,6 +280,38 @@ DEFAULT_OPERATOR_TEXT_TEMPLATES: dict[str, dict[str, list[dict[str, str]]]] = {
 }
 
 
+def _build_default_operator_text_template_groups() -> dict[str, list[dict[str, object]]]:
+    grouped_defaults: dict[str, list[dict[str, object]]] = {}
+    language_order = ("de", "en", "pl")
+    label_priority = ("en", "de", "pl")
+    for template_kind, templates_by_language in DEFAULT_OPERATOR_TEXT_TEMPLATES.items():
+        max_entries = max((len(entries) for entries in templates_by_language.values()), default=0)
+        grouped_defaults[template_kind] = []
+        for index in range(max_entries):
+            operator_label = ""
+            for language in label_priority:
+                entries = templates_by_language.get(language, [])
+                if index < len(entries):
+                    operator_label = str(entries[index].get("label") or "").strip()
+                if operator_label:
+                    break
+            texts = {}
+            for language in language_order:
+                entries = templates_by_language.get(language, [])
+                texts[language] = str(entries[index].get("text") or "").strip() if index < len(entries) else ""
+            grouped_defaults[template_kind].append(
+                {
+                    "group_key": f"{template_kind}_{index}",
+                    "operator_label": operator_label or f"{template_kind}_{index + 1}",
+                    "texts": texts,
+                }
+            )
+    return grouped_defaults
+
+
+DEFAULT_OPERATOR_TEXT_TEMPLATE_GROUPS = _build_default_operator_text_template_groups()
+
+
 def sanitize_template_placeholders(template: str) -> str:
     return template.replace("{followup_text}", "").replace("{followup_html}", "")
 

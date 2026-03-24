@@ -28,15 +28,15 @@ OPERATOR_TEXT_TEMPLATE_KIND_LABELS = {
 REJECTION_REASON_TEMPLATES = {
     "de": [
         {
-            "label": "Lizenzrechtliche Bedingungen",
+            "label": "Licensing restrictions",
             "text": "Die Anfrage kann aufgrund lizenzrechtlicher Bedingungen leider nicht erfüllt werden.",
         },
         {
-            "label": "Kein lokaler Print-Bestand / Fernleihe",
+            "label": "No local print holdings / Interlibrary loan",
             "text": "Der Titel ist lokal nicht im Print-Bestand vorhanden. Bitte nutzen Sie die Fernleihe als Alternative.",
         },
         {
-            "label": "Online bereits zugänglich",
+            "label": "Already available online",
             "text": "Der angefragte Titel ist bereits online zugänglich.",
         },
     ],
@@ -56,15 +56,15 @@ REJECTION_REASON_TEMPLATES = {
     ],
     "pl": [
         {
-            "label": "Ograniczenia licencyjne",
+            "label": "Licensing restrictions",
             "text": "Niestety nie mozemy zrealizowac tej prosby ze wzgledu na ograniczenia licencyjne.",
         },
         {
-            "label": "Brak lokalnego egzemplarza drukowanego / Wypozyczenie miedzybiblioteczne",
+            "label": "No local print holdings / Interlibrary loan",
             "text": "Tytul nie jest dostepny w lokalnym zbiorze drukowanym. Prosze skorzystac z wypozyczenia miedzybibliotecznego jako alternatywy.",
         },
         {
-            "label": "Pozycja dostepna online",
+            "label": "Already available online",
             "text": "Zamawiany tytul jest juz dostepny online.",
         },
     ],
@@ -73,15 +73,15 @@ REJECTION_REASON_TEMPLATES = {
 CLARIFICATION_DETAIL_TEMPLATES = {
     "de": [
         {
-            "label": "Autorennamen prüfen",
+            "label": "Verify author names",
             "text": "Bitte überprüfen Sie die Autorennamen.",
         },
         {
-            "label": "Titel prüfen",
+            "label": "Verify title",
             "text": "Bitte überprüfen Sie den Titel.",
         },
         {
-            "label": "Seitenzahlen/weitere Angaben prüfen",
+            "label": "Verify pages/other identifying details",
             "text": "Bitte überprüfen Sie die Seitenzahlen oder ergänzen Sie weitere Angaben zur sicheren Identifikation des gewünschten Titels.",
         },
     ],
@@ -101,15 +101,15 @@ CLARIFICATION_DETAIL_TEMPLATES = {
     ],
     "pl": [
         {
-            "label": "Sprawdz nazwiska autorow",
+            "label": "Verify author names",
             "text": "Prosze sprawdzic nazwiska autorow.",
         },
         {
-            "label": "Sprawdz tytul",
+            "label": "Verify title",
             "text": "Prosze sprawdzic tytul.",
         },
         {
-            "label": "Sprawdz strony/inne dane identyfikacyjne",
+            "label": "Verify pages/other identifying details",
             "text": "Prosze sprawdzic numery stron lub podac dodatkowe informacje, aby mozna bylo jednoznacznie zidentyfikowac zamawiany tytul.",
         },
     ],
@@ -441,6 +441,36 @@ def fetch_operator_text_templates(template_kind: str, language: str) -> list[dic
 def save_operator_text_templates(template_kind: str, language: str, entries: list[dict]) -> list[dict]:
     response = requests.put(
         f"{API_BASE_URL}/operator-text-templates/{template_kind}/{language}",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json={"entries": entries},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_operator_text_template_groups(template_kind: str) -> list[dict]:
+    response = requests.get(
+        f"{API_BASE_URL}/operator-text-template-groups/{template_kind}",
+        headers=_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return [
+        {
+            "operator_label": row.get("operator_label", ""),
+            "text_de": row.get("text_de", ""),
+            "text_en": row.get("text_en", ""),
+            "text_pl": row.get("text_pl", ""),
+        }
+        for row in payload
+    ]
+
+
+def save_operator_text_template_groups(template_kind: str, entries: list[dict]) -> list[dict]:
+    response = requests.put(
+        f"{API_BASE_URL}/operator-text-template-groups/{template_kind}",
         headers={**_headers(), "Content-Type": "application/json"},
         json={"entries": entries},
         timeout=30,
@@ -832,7 +862,7 @@ def _render_template_editor() -> None:
 
     st.divider()
     st.subheader("Predefined text blocks")
-    st.caption("Manage selectable texts for rejection reasons and clarification details.")
+    st.caption("Manage one stable operator label with localized user-facing texts for rejection reasons and clarification details.")
 
     template_kind = st.selectbox(
         "Text block type",
@@ -840,49 +870,57 @@ def _render_template_editor() -> None:
         format_func=lambda value: OPERATOR_TEXT_TEMPLATE_KIND_LABELS[value],
         key="operator-text-template-kind",
     )
-    template_language = st.selectbox(
-        "Text block language",
-        ["de", "en", "pl"],
-        format_func=lambda value: LANGUAGE_LABELS[value],
-        key="operator-text-template-language",
-    )
 
     try:
-        existing_entries = fetch_operator_text_templates(template_kind, template_language)
+        existing_entries = fetch_operator_text_template_groups(template_kind)
     except requests.RequestException as exc:
         st.error(f"Could not load predefined text blocks: {exc}")
         return
 
     editor_df = pd.DataFrame(existing_entries)
     if editor_df.empty:
-        editor_df = pd.DataFrame(columns=["label", "text"])
+        editor_df = pd.DataFrame(columns=["operator_label", "text_de", "text_en", "text_pl"])
     else:
-        editor_df = editor_df[["label", "text"]]
+        editor_df = editor_df[["operator_label", "text_de", "text_en", "text_pl"]]
 
     edited_df = st.data_editor(
         editor_df,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
-        key=f"operator-text-editor-{template_kind}-{template_language}",
+        key=f"operator-text-editor-{template_kind}",
         column_config={
-            "label": st.column_config.TextColumn("Label", required=True),
-            "text": st.column_config.TextColumn("Text", required=True, width="large"),
+            "operator_label": st.column_config.TextColumn("Operator label", required=True, width="medium"),
+            "text_de": st.column_config.TextColumn("German text", width="large"),
+            "text_en": st.column_config.TextColumn("English text", width="large"),
+            "text_pl": st.column_config.TextColumn("Polish text", width="large"),
         },
     )
 
-    if st.button("Save predefined texts", key=f"save-operator-texts-{template_kind}-{template_language}"):
+    if st.button("Save predefined texts", key=f"save-operator-texts-{template_kind}"):
         entries: list[dict] = []
         for _, row in edited_df.iterrows():
-            label = str(row.get("label") or "").strip()
-            text = str(row.get("text") or "").strip()
-            if not label and not text:
+            operator_label = str(row.get("operator_label") or "").strip()
+            text_de = str(row.get("text_de") or "").strip()
+            text_en = str(row.get("text_en") or "").strip()
+            text_pl = str(row.get("text_pl") or "").strip()
+            if not operator_label and not any([text_de, text_en, text_pl]):
                 continue
-            if not label or not text:
-                st.error("Each predefined text row needs both label and text.")
+            if not operator_label:
+                st.error("Each predefined text row needs an operator label.")
                 st.stop()
-            entries.append({"label": label, "text": text})
-        save_operator_text_templates(template_kind, template_language, entries)
+            if not any([text_de, text_en, text_pl]):
+                st.error("Each predefined text row needs at least one localized text.")
+                st.stop()
+            entries.append(
+                {
+                    "operator_label": operator_label,
+                    "text_de": text_de,
+                    "text_en": text_en,
+                    "text_pl": text_pl,
+                }
+            )
+        save_operator_text_template_groups(template_kind, entries)
         st.success("Predefined texts saved")
         st.rerun()
 

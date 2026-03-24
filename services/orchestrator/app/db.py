@@ -61,6 +61,10 @@ def _migrate_sqlite() -> None:
             "series": "ALTER TABLE request_items ADD COLUMN series TEXT",
             "edition": "ALTER TABLE request_items ADD COLUMN edition VARCHAR(64)",
             "isbn": "ALTER TABLE request_items ADD COLUMN isbn VARCHAR(64)",
+        },
+        "operator_text_template_entries": {
+            "group_key": "ALTER TABLE operator_text_template_entries ADD COLUMN group_key VARCHAR(128)",
+            "operator_label": "ALTER TABLE operator_text_template_entries ADD COLUMN operator_label TEXT",
         }
     }
 
@@ -220,27 +224,45 @@ def _seed_rejection_templates() -> None:
 
 def _seed_operator_text_templates() -> None:
     from app.models import OperatorTextTemplateEntry
-    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATES
+    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATE_GROUPS
 
     with SessionLocal() as session:
-        for template_kind, by_language in DEFAULT_OPERATOR_TEXT_TEMPLATES.items():
-            for language, entries in by_language.items():
-                exists = session.scalar(
-                    text(
-                        "SELECT 1 FROM operator_text_template_entries "
-                        "WHERE template_kind = :template_kind AND language = :language LIMIT 1"
-                    ),
-                    {"template_kind": template_kind, "language": language},
-                )
-                if exists:
-                    continue
-                for index, entry in enumerate(entries):
+        legacy_rows = session.scalar(
+            text(
+                "SELECT 1 FROM operator_text_template_entries "
+                "WHERE group_key IS NULL OR operator_label IS NULL LIMIT 1"
+            )
+        )
+        if legacy_rows:
+            session.execute(text("DELETE FROM operator_text_template_entries"))
+            session.flush()
+
+        for template_kind, entries in DEFAULT_OPERATOR_TEXT_TEMPLATE_GROUPS.items():
+            exists = session.scalar(
+                text(
+                    "SELECT 1 FROM operator_text_template_entries "
+                    "WHERE template_kind = :template_kind LIMIT 1"
+                ),
+                {"template_kind": template_kind},
+            )
+            if exists:
+                continue
+            for index, entry in enumerate(entries):
+                operator_label = str(entry.get("operator_label") or "").strip()
+                group_key = str(entry.get("group_key") or f"{template_kind}_{index}").strip()
+                texts = entry.get("texts") or {}
+                for language, text_value in texts.items():
+                    text_value = str(text_value or "").strip()
+                    if not text_value:
+                        continue
                     session.add(
                         OperatorTextTemplateEntry(
                             template_kind=template_kind,
+                            group_key=group_key,
                             language=language,
-                            label=entry["label"],
-                            text_value=entry["text"],
+                            operator_label=operator_label,
+                            label=operator_label,
+                            text_value=text_value,
                             sort_order=index,
                         )
                     )

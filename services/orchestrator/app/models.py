@@ -135,7 +135,9 @@ class OperatorTextTemplateEntry(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     template_kind: Mapped[str] = mapped_column(String(64), index=True)
+    group_key: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     language: Mapped[str] = mapped_column(String(16), index=True)
+    operator_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str] = mapped_column(Text)
     text_value: Mapped[str] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)

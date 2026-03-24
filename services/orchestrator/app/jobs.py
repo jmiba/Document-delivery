@@ -27,7 +27,9 @@ from app.schemas import (
     FormCycleRequest,
     JobEventSummary,
     OperatorTextTemplateEntrySummary,
+    OperatorTextTemplateGroupSummary,
     PeriodStatisticsSummary,
+    ReplaceOperatorTextTemplateGroupsRequest,
     ReplaceOperatorTextTemplatesRequest,
     RejectRequestItemRequest,
     RejectionNotificationPayload,
@@ -40,6 +42,7 @@ from app.schemas import (
 
 SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS = {"rejection_reason", "clarification_detail"}
 SUPPORTED_TEMPLATE_LANGUAGES = {"de", "en", "pl"}
+TEMPLATE_LANGUAGE_ORDER = ("de", "en", "pl")
 
 
 def create_request(payload: FormCycleRequest) -> tuple[str, bool]:
@@ -493,10 +496,98 @@ def update_rejection_template(language: str, payload: UpdateEmailTemplateRequest
         )
 
 
-def list_operator_text_templates(template_kind: str, language: str) -> list[OperatorTextTemplateEntrySummary]:
-    from app.models import OperatorTextTemplateEntry
-    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATES
+def _default_operator_text_template_groups(template_kind: str) -> list[OperatorTextTemplateGroupSummary]:
+    from app.templates import DEFAULT_OPERATOR_TEXT_TEMPLATE_GROUPS
 
+    return [
+        OperatorTextTemplateGroupSummary(
+            template_kind=template_kind,
+            operator_label=str(entry.get("operator_label") or "").strip(),
+            text_de=str((entry.get("texts") or {}).get("de") or "").strip(),
+            text_en=str((entry.get("texts") or {}).get("en") or "").strip(),
+            text_pl=str((entry.get("texts") or {}).get("pl") or "").strip(),
+            sort_order=index,
+        )
+        for index, entry in enumerate(DEFAULT_OPERATOR_TEXT_TEMPLATE_GROUPS.get(template_kind, []))
+    ]
+
+
+def _operator_text_group_key(template_kind: str, operator_label: str, sort_order: int, used_keys: set[str]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", operator_label.strip().lower()).strip("_")
+    base_key = base or f"{template_kind}_{sort_order + 1}"
+    candidate = f"{template_kind}_{base_key}"
+    suffix = 2
+    while candidate in used_keys:
+        candidate = f"{template_kind}_{base_key}_{suffix}"
+        suffix += 1
+    used_keys.add(candidate)
+    return candidate
+
+
+def _group_operator_text_template_rows(template_kind: str, rows) -> list[OperatorTextTemplateGroupSummary]:
+    grouped: dict[str, dict] = {}
+    for entry in rows:
+        group_key = entry.group_key or f"{template_kind}_{entry.sort_order}"
+        bucket = grouped.setdefault(
+            group_key,
+            {
+                "template_kind": template_kind,
+                "operator_label": (entry.operator_label or entry.label or "").strip(),
+                "text_de": "",
+                "text_en": "",
+                "text_pl": "",
+                "sort_order": entry.sort_order,
+            },
+        )
+        if not bucket["operator_label"]:
+            bucket["operator_label"] = (entry.operator_label or entry.label or "").strip()
+        bucket[f"text_{entry.language}"] = entry.text_value
+    return [
+        OperatorTextTemplateGroupSummary(**bucket)
+        for bucket in sorted(grouped.values(), key=lambda value: (value["sort_order"], value["operator_label"]))
+    ]
+
+
+def _text_for_operator_group(group: OperatorTextTemplateGroupSummary, language: str) -> str:
+    ordered_languages = [language, "en", "de", "pl"]
+    seen = set()
+    for candidate in ordered_languages:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        value = str(getattr(group, f"text_{candidate}", "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def list_operator_text_template_groups(template_kind: str) -> list[OperatorTextTemplateGroupSummary]:
+    from app.models import OperatorTextTemplateEntry
+
+    normalized_kind = template_kind.strip().lower()
+    if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
+        raise ValueError("Unsupported template kind")
+
+    with session_scope() as session:
+        stored = list(
+            session.scalars(
+                select(OperatorTextTemplateEntry)
+                .where(OperatorTextTemplateEntry.template_kind == normalized_kind)
+                .order_by(
+                    OperatorTextTemplateEntry.sort_order.asc(),
+                    OperatorTextTemplateEntry.group_key.asc(),
+                    OperatorTextTemplateEntry.language.asc(),
+                    OperatorTextTemplateEntry.id.asc(),
+                )
+            )
+        )
+
+    if stored:
+        return _group_operator_text_template_rows(normalized_kind, stored)
+    return _default_operator_text_template_groups(normalized_kind)
+
+
+def list_operator_text_templates(template_kind: str, language: str) -> list[OperatorTextTemplateEntrySummary]:
     normalized_kind = template_kind.strip().lower()
     normalized_language = language.strip().lower()
     if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
@@ -504,38 +595,80 @@ def list_operator_text_templates(template_kind: str, language: str) -> list[Oper
     if normalized_language not in SUPPORTED_TEMPLATE_LANGUAGES:
         raise ValueError("Unsupported language")
 
-    with session_scope() as session:
-        stored = list(
-            session.scalars(
-                select(OperatorTextTemplateEntry)
-                .where(OperatorTextTemplateEntry.template_kind == normalized_kind)
-                .where(OperatorTextTemplateEntry.language == normalized_language)
-                .order_by(OperatorTextTemplateEntry.sort_order.asc(), OperatorTextTemplateEntry.id.asc())
+    entries: list[OperatorTextTemplateEntrySummary] = []
+    for group in list_operator_text_template_groups(normalized_kind):
+        text_value = _text_for_operator_group(group, normalized_language)
+        if not text_value:
+            continue
+        entries.append(
+            OperatorTextTemplateEntrySummary(
+                template_kind=normalized_kind,
+                language=normalized_language,
+                label=group.operator_label,
+                text=text_value,
+                sort_order=group.sort_order,
             )
         )
+    return entries
 
-    if stored:
-        return [
-            OperatorTextTemplateEntrySummary(
-                template_kind=entry.template_kind,
-                language=entry.language,
-                label=entry.label,
-                text=entry.text_value,
-                sort_order=entry.sort_order,
-            )
-            for entry in stored
-        ]
 
-    defaults = DEFAULT_OPERATOR_TEXT_TEMPLATES.get(normalized_kind, {}).get(normalized_language, [])
+def replace_operator_text_template_groups(
+    template_kind: str,
+    payload: ReplaceOperatorTextTemplateGroupsRequest,
+) -> list[OperatorTextTemplateGroupSummary]:
+    from app.models import OperatorTextTemplateEntry
+
+    normalized_kind = template_kind.strip().lower()
+    if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
+        raise ValueError("Unsupported template kind")
+
+    cleaned_entries: list[dict] = []
+    for entry in payload.entries:
+        operator_label = entry.operator_label.strip()
+        texts = {
+            "de": entry.text_de.strip(),
+            "en": entry.text_en.strip(),
+            "pl": entry.text_pl.strip(),
+        }
+        if not operator_label and not any(texts.values()):
+            continue
+        if not operator_label:
+            raise ValueError("Each predefined text block needs an operator label.")
+        if not any(texts.values()):
+            raise ValueError("Each predefined text block needs at least one localized text.")
+        cleaned_entries.append({"operator_label": operator_label, "texts": texts})
+
+    with session_scope() as session:
+        session.execute(delete(OperatorTextTemplateEntry).where(OperatorTextTemplateEntry.template_kind == normalized_kind))
+        used_keys: set[str] = set()
+        for index, entry in enumerate(cleaned_entries):
+            group_key = _operator_text_group_key(normalized_kind, entry["operator_label"], index, used_keys)
+            for language in TEMPLATE_LANGUAGE_ORDER:
+                text_value = entry["texts"][language]
+                if not text_value:
+                    continue
+                session.add(
+                    OperatorTextTemplateEntry(
+                        template_kind=normalized_kind,
+                        group_key=group_key,
+                        language=language,
+                        operator_label=entry["operator_label"],
+                        label=entry["operator_label"],
+                        text_value=text_value,
+                        sort_order=index,
+                    )
+                )
+
     return [
-        OperatorTextTemplateEntrySummary(
+        OperatorTextTemplateGroupSummary(
             template_kind=normalized_kind,
-            language=normalized_language,
-            label=entry["label"],
-            text=entry["text"],
+            operator_label=entry["operator_label"],
+            text_de=entry["texts"]["de"],
+            text_en=entry["texts"]["en"],
+            text_pl=entry["texts"]["pl"],
             sort_order=index,
         )
-        for index, entry in enumerate(defaults)
+        for index, entry in enumerate(cleaned_entries)
     ]
 
 
@@ -544,8 +677,6 @@ def replace_operator_text_templates(
     language: str,
     payload: ReplaceOperatorTextTemplatesRequest,
 ) -> list[OperatorTextTemplateEntrySummary]:
-    from app.models import OperatorTextTemplateEntry
-
     normalized_kind = template_kind.strip().lower()
     normalized_language = language.strip().lower()
     if normalized_kind not in SUPPORTED_OPERATOR_TEXT_TEMPLATE_KINDS:
@@ -557,37 +688,38 @@ def replace_operator_text_templates(
     for entry in payload.entries:
         label = entry.label.strip()
         text_value = entry.text.strip()
-        if not label or not text_value:
+        if not label and not text_value:
             continue
+        if not label or not text_value:
+            raise ValueError("Each predefined text row needs both a label and text.")
         cleaned_entries.append({"label": label, "text": text_value})
 
-    with session_scope() as session:
-        session.execute(
-            delete(OperatorTextTemplateEntry)
-            .where(OperatorTextTemplateEntry.template_kind == normalized_kind)
-            .where(OperatorTextTemplateEntry.language == normalized_language)
-        )
-        for index, entry in enumerate(cleaned_entries):
-            session.add(
-                OperatorTextTemplateEntry(
-                    template_kind=normalized_kind,
-                    language=normalized_language,
-                    label=entry["label"],
-                    text_value=entry["text"],
-                    sort_order=index,
+    existing_groups = list_operator_text_template_groups(normalized_kind)
+    replacement_entries = []
+    for index, entry in enumerate(cleaned_entries):
+        existing_group = existing_groups[index] if index < len(existing_groups) else None
+        replacement_entry = {
+            "operator_label": (
+                entry["label"]
+                if normalized_language == "en"
+                else (
+                    existing_group.operator_label
+                    if existing_group
+                    else entry["label"]
                 )
-            )
+            ),
+            "text_de": existing_group.text_de if existing_group else "",
+            "text_en": existing_group.text_en if existing_group else "",
+            "text_pl": existing_group.text_pl if existing_group else "",
+        }
+        replacement_entry[f"text_{normalized_language}"] = entry["text"]
+        replacement_entries.append(replacement_entry)
 
-    return [
-        OperatorTextTemplateEntrySummary(
-            template_kind=normalized_kind,
-            language=normalized_language,
-            label=entry["label"],
-            text=entry["text"],
-            sort_order=index,
-        )
-        for index, entry in enumerate(cleaned_entries)
-    ]
+    replace_operator_text_template_groups(
+        normalized_kind,
+        ReplaceOperatorTextTemplateGroupsRequest(entries=replacement_entries),
+    )
+    return list_operator_text_templates(normalized_kind, normalized_language)
 
 
 def retry_request(request_id: str) -> bool:
