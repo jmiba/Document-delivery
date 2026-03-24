@@ -140,7 +140,11 @@ def list_requests() -> list[RequestSummary]:
             .options(selectinload(DeliveryRequest.items))
             .order_by(DeliveryRequest.updated_at.desc())
         ).unique()
-        return [build_request_summary(request) for request in requests]
+        summaries: list[RequestSummary] = []
+        for request in requests:
+            _sync_request_status(session, request)
+            summaries.append(build_request_summary(request))
+        return summaries
 
 
 def get_request_summary(request_id: str) -> RequestSummary | None:
@@ -152,6 +156,7 @@ def get_request_summary(request_id: str) -> RequestSummary | None:
         )
         if not request:
             return None
+        _sync_request_status(session, request)
         return build_request_summary(request)
 
 
@@ -756,6 +761,8 @@ def reject_request_item(request_id: str, item_id: int, payload: RejectRequestIte
             return False
         if item.status in {"DELIVERED", "REJECTED"}:
             raise ValueError("Item is already finalized.")
+        if item.status == "READY_TO_NOTIFY":
+            raise ValueError("Item is already prepared for delivery and can no longer be rejected.")
 
         notification_payload = RejectionNotificationPayload(
             request_id=request.request_id,
@@ -1079,6 +1086,7 @@ def _claim_next_item_snapshot() -> dict | None:
                 | (RequestItem.status == "PROCESSING_PDF")
                 | (
                     (RequestItem.status == "READY_TO_NOTIFY")
+                    & (DeliveryRequest.notification_sent_at.is_(None))
                     & ((RequestItem.next_poll_at.is_(None)) | (RequestItem.next_poll_at <= now))
                 )
             )
@@ -1086,7 +1094,8 @@ def _claim_next_item_snapshot() -> dict | None:
         )
         if not item:
             return None
-        item.request.status = "IN_PROGRESS"
+        if item.status != "READY_TO_NOTIFY":
+            item.request.status = "IN_PROGRESS"
         return {
             "item_id": item.id,
             "request_id": item.request.request_id,
@@ -1662,6 +1671,12 @@ def _update_item(item_id: int, **changes) -> None:
 
 
 def _sync_request_status(session, request: DeliveryRequest) -> None:
+    if request.notification_sent_at:
+        for item in request.items:
+            if item.status == "READY_TO_NOTIFY":
+                item.status = "DELIVERED"
+                item.last_error = None
+                item.next_poll_at = None
     statuses = {item.status for item in request.items}
     if not statuses:
         request.status = "RECEIVED"

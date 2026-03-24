@@ -15,6 +15,8 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 PASSWORD_AUTH_SESSION_KEY = "password_auth_authenticated"
 PASSWORD_AUTH_USER_KEY = "password_auth_user"
+REQUEST_QUEUE_SELECTION_KEY = "request-queue-selection"
+REQUEST_QUEUE_SNAPSHOT_KEY = "request-queue-request-ids"
 
 SUPPORTED_MESSAGE_LANGUAGES = {"de", "en", "pl"}
 LANGUAGE_LABELS = {"de": "German", "en": "English", "pl": "Polish"}
@@ -621,6 +623,29 @@ def _query_request_id() -> str | None:
     return str(value) if value else None
 
 
+def _update_selected_request_from_queue() -> None:
+    widget_state = st.session_state.get(REQUEST_QUEUE_SELECTION_KEY)
+    if widget_state is None:
+        return
+
+    selection = getattr(widget_state, "selection", None)
+    if selection is None and isinstance(widget_state, dict):
+        selection = widget_state.get("selection")
+    if selection is None:
+        return
+
+    selection_rows = getattr(selection, "rows", None)
+    if selection_rows is None and isinstance(selection, dict):
+        selection_rows = selection.get("rows", [])
+    if not selection_rows:
+        return
+
+    request_ids = st.session_state.get(REQUEST_QUEUE_SNAPSHOT_KEY)
+    selected_row = selection_rows[0]
+    if isinstance(request_ids, list) and 0 <= selected_row < len(request_ids):
+        st.session_state["selected_request_id"] = str(request_ids[selected_row])
+
+
 def _render_bar_chart(
     rows: list[dict],
     x_field: str,
@@ -876,9 +901,18 @@ def _render_requests_page() -> None:
     metrics[4].metric("Rejected", status_counts.get("REJECTED", 0))
     metrics[5].metric("Processed", status_counts.get("PROCESSED", 0))
 
+    request_ids = [request["request_id"] for request in requests_data]
+    requested_request_id = _query_request_id()
+    has_session_selection = "selected_request_id" in st.session_state
+    selected_request = st.session_state.get("selected_request_id")
+    if request_ids:
+        if not has_session_selection:
+            selected_request = requested_request_id if requested_request_id in request_ids else request_ids[0]
+        elif selected_request not in request_ids:
+            selected_request = request_ids[0]
+
     table_rows = [
         {
-            "select": False,
             "request_id": request["request_id"],
             "status": request["status"],
             "user_email": request["user_email"],
@@ -887,36 +921,24 @@ def _render_requests_page() -> None:
         }
         for request in requests_data
     ]
-    request_ids = [request["request_id"] for request in requests_data]
-    requested_request_id = _query_request_id()
-    selected_request = None
     st.subheader("Queue")
-    queue_df = pd.DataFrame([{key: value for key, value in row.items() if key != "select"} for row in table_rows])
-    event = st.dataframe(
+    queue_df = pd.DataFrame(table_rows)
+    st.session_state[REQUEST_QUEUE_SNAPSHOT_KEY] = request_ids
+    st.dataframe(
         queue_df,
         use_container_width=True,
         hide_index=True,
-        on_select="rerun",
+        on_select=_update_selected_request_from_queue,
         selection_mode="single-row",
-        key="request-queue-selection",
+        key=REQUEST_QUEUE_SELECTION_KEY,
     )
 
     if request_ids:
         selected_request = st.session_state.get("selected_request_id")
-        if requested_request_id and requested_request_id in request_ids:
-            selected_request = requested_request_id
-        selection_rows = event.selection.rows if hasattr(event, "selection") else []
-        if selection_rows:
-            try:
-                selected_request = str(queue_df.iloc[selection_rows[0]]["request_id"])
-            except Exception:
-                pass
         if selected_request not in request_ids:
             selected_request = request_ids[0]
 
     st.session_state["selected_request_id"] = selected_request
-    if selected_request:
-        st.query_params["request_id"] = selected_request
     if requested_request_id and requested_request_id not in request_ids:
         st.warning(f"Request {requested_request_id} was not found.")
 
@@ -984,7 +1006,7 @@ def _render_requests_page() -> None:
     rejectable_items = [
         item
         for item in request["items"]
-        if item["status"] not in {"DELIVERED", "REJECTED"}
+        if item["status"] not in {"READY_TO_NOTIFY", "DELIVERED", "REJECTED"}
     ]
 
     review_candidates = [item for item in request["items"] if item["status"] == "NEEDS_REVIEW"]
