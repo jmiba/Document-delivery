@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+import html
 import hashlib
 import hmac
 import json
@@ -9,6 +11,7 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
@@ -17,6 +20,7 @@ PASSWORD_AUTH_SESSION_KEY = "password_auth_authenticated"
 PASSWORD_AUTH_USER_KEY = "password_auth_user"
 REQUEST_QUEUE_SELECTION_KEY = "request-queue-selection"
 REQUEST_QUEUE_SNAPSHOT_KEY = "request-queue-request-ids"
+SCAN_LIST_STATUSES = {"WAITING_FOR_ATTACHMENT", "FAILED"}
 
 SUPPORTED_MESSAGE_LANGUAGES = {"de", "en", "pl"}
 LANGUAGE_LABELS = {"de": "German", "en": "English", "pl": "Polish"}
@@ -320,6 +324,241 @@ def _human_readable_bib_rows(payload: dict) -> list[dict]:
         for key, label in labels
         if seed.get(key) not in (None, "")
     ]
+
+
+def _display_value(value) -> str:
+    text = "" if value is None else str(value).strip()
+    return text if text else "Not provided"
+
+
+def _html(value) -> str:
+    return html.escape(_display_value(value), quote=True)
+
+
+def _item_type_label(value: str | None) -> str:
+    item_type = str(value or "").strip()
+    return ITEM_TYPE_LABELS.get(item_type, item_type or "Unknown")
+
+
+def _scan_candidate_items(request: dict) -> list[dict]:
+    return [
+        item
+        for item in request.get("items", [])
+        if item.get("status") in SCAN_LIST_STATUSES and item.get("zotero_item_key")
+    ]
+
+
+def _scan_candidate_requests(requests_data: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+    for request in requests_data:
+        items = _scan_candidate_items(request)
+        if not items:
+            continue
+        candidates.append({**request, "items": items})
+    return candidates
+
+
+def _scan_list_field(label: str, value) -> str:
+    return f"<div><dt>{html.escape(label)}</dt><dd>{_html(value)}</dd></div>"
+
+
+def _scan_list_item_html(request: dict, item: dict) -> str:
+    fields = [
+        ("Request ID", request.get("request_id")),
+        ("User", request.get("user_name") or request.get("user_email")),
+        ("User email", request.get("user_email")),
+        ("Submission ID", request.get("formcycle_submission_id")),
+        ("Item number", item.get("item_index")),
+        ("Item type", _item_type_label(item.get("item_type"))),
+        ("Article/chapter title", item.get("title")),
+        ("Creators", item.get("creators")),
+        ("Editors", item.get("editors")),
+        ("Journal/book title", item.get("publication_title")),
+        ("Year", item.get("year")),
+        ("Volume", item.get("volume")),
+        ("Issue", item.get("issue")),
+        ("Pages", item.get("pages")),
+        ("DOI", item.get("doi")),
+        ("Publisher", item.get("publisher")),
+        ("Place", item.get("place")),
+        ("Series", item.get("series")),
+        ("Edition", item.get("edition")),
+        ("ISBN", item.get("isbn")),
+        ("Zotero item key", item.get("zotero_item_key")),
+        ("Metadata source", item.get("metadata_source")),
+        ("Confidence", item.get("normalization_confidence")),
+        ("Attachment state", _attachment_state(item)),
+        ("Item status", item.get("status")),
+    ]
+    if item.get("review_notes"):
+        fields.append(("Review notes", item.get("review_notes")))
+    if item.get("last_error"):
+        fields.append(("Last error", item.get("last_error")))
+    field_html = "\n".join(_scan_list_field(label, value) for label, value in fields)
+    title = _html(item.get("title"))
+    return f"""
+      <article class="scan-item">
+        <h2>#{_html(item.get("item_index"))} {title}</h2>
+        <dl>{field_html}</dl>
+      </article>
+    """
+
+
+def _build_scan_list_html(scan_requests: list[dict]) -> str:
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    item_count = sum(len(request.get("items", [])) for request in scan_requests)
+    request_count = len(scan_requests)
+    items_html = "\n".join(
+        _scan_list_item_html(request, item)
+        for request in scan_requests
+        for item in request.get("items", [])
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Document Delivery Scan List</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --border: #9aa4ad;
+      --text: #17212b;
+      --muted: #58636f;
+      --surface: #ffffff;
+      --accent: #2f6f73;
+    }}
+    body {{
+      margin: 0;
+      padding: 24px;
+      background: #f5f7f8;
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      line-height: 1.35;
+    }}
+    .toolbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 0 18px;
+      padding: 12px 0;
+      border-bottom: 2px solid var(--border);
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
+    }}
+    .meta {{
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    button {{
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 8px 12px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .scan-item {{
+      margin: 0 0 16px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }}
+    h2 {{
+      margin: 0 0 12px;
+      font-size: 17px;
+      line-height: 1.25;
+    }}
+    dl {{
+      display: grid;
+      grid-template-columns: minmax(130px, 190px) 1fr;
+      gap: 0;
+      margin: 0;
+      border-top: 1px solid #d7dde2;
+    }}
+    dl div {{
+      display: contents;
+    }}
+    dt, dd {{
+      margin: 0;
+      padding: 6px 8px;
+      border-bottom: 1px solid #d7dde2;
+    }}
+    dt {{
+      color: var(--muted);
+      font-weight: 700;
+      background: #eef2f4;
+    }}
+    dd {{
+      overflow-wrap: anywhere;
+    }}
+    @page {{
+      margin: 14mm;
+    }}
+    @media print {{
+      body {{
+        padding: 0;
+        background: white;
+        font-size: 11pt;
+      }}
+      .toolbar {{
+        display: block;
+        border-bottom: 2px solid #333;
+      }}
+      .toolbar button {{
+        display: none;
+      }}
+      .scan-item {{
+        border-color: #555;
+        box-shadow: none;
+      }}
+      dt {{
+        background: #f0f0f0;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <div>
+      <h1>Document Delivery Scan List</h1>
+      <div class="meta">Generated {html.escape(generated_at)} | {item_count} item(s) across {request_count} request(s)</div>
+    </div>
+    <button type="button" onclick="window.focus(); window.print();">Print scan list</button>
+  </header>
+  <main>
+    {items_html}
+  </main>
+</body>
+</html>
+"""
+
+
+def _render_printable_scan_list(requests_data: list[dict]) -> None:
+    scan_requests = _scan_candidate_requests(requests_data)
+    item_count = sum(len(request.get("items", [])) for request in scan_requests)
+    with st.expander(f"Printable scan list ({item_count} items)", expanded=False):
+        if not item_count:
+            st.info("No items are currently waiting for scans.")
+            return
+        scan_list_html = _build_scan_list_html(scan_requests)
+        st.download_button(
+            "Download printable HTML",
+            data=scan_list_html,
+            file_name="document-delivery-scan-list.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+        components.html(scan_list_html, height=720, scrolling=True)
 
 
 def _render_bib_payload(label: str, payload: dict | None, key: str) -> None:
@@ -1098,6 +1337,7 @@ def _render_requests_page() -> None:
         selection_mode="single-row",
         key=REQUEST_QUEUE_SELECTION_KEY,
     )
+    _render_printable_scan_list(requests_data)
 
     if request_ids:
         selected_request = st.session_state.get("selected_request_id")
@@ -1154,8 +1394,18 @@ def _render_requests_page() -> None:
             "item_type": item["item_type"],
             "title": item["title"],
             "creators": item["creators"],
+            "editors": item["editors"],
+            "publication_title": item["publication_title"],
+            "year": item["year"],
+            "volume": item["volume"],
+            "issue": item["issue"],
+            "pages": item["pages"],
+            "doi": item["doi"],
             "publisher": item["publisher"],
+            "place": item["place"],
             "series": item["series"],
+            "edition": item["edition"],
+            "isbn": item["isbn"],
             "status": item["status"],
             "metadata_source": item["metadata_source"],
             "confidence": item["normalization_confidence"],
@@ -1407,11 +1657,7 @@ def _render_requests_page() -> None:
                 st.success("Rejection mail sent and item rejected.")
                 st.rerun()
 
-    upload_candidates = [
-        item
-        for item in request["items"]
-        if item["status"] in {"WAITING_FOR_ATTACHMENT", "FAILED"} and item["zotero_item_key"]
-    ]
+    upload_candidates = _scan_candidate_items(request)
     if upload_candidates:
         st.subheader("Upload scans")
         st.caption("Preferred path: upload the scanned PDF here. The worker will OCR it if needed, attach the processed PDF to Zotero, and continue delivery.")
