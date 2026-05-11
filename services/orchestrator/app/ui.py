@@ -662,6 +662,23 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+def _api_error_detail(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("detail"):
+        detail = payload["detail"]
+        if isinstance(detail, str):
+            return detail
+        return json.dumps(detail, ensure_ascii=False)
+    text = (response.text or "").strip()
+    return text or str(exc)
+
+
 def fetch_requests() -> list[dict]:
     response = requests.get(f"{API_BASE_URL}/requests", headers=_headers(), timeout=30)
     response.raise_for_status()
@@ -1653,7 +1670,11 @@ def _render_requests_page() -> None:
                 if not rejection_reason.strip():
                     st.error("Select at least one predefined reason or enter free text.")
                     st.stop()
-                reject_item(request["request_id"], rejected_item["id"], rejection_reason)
+                try:
+                    reject_item(request["request_id"], rejected_item["id"], rejection_reason)
+                except requests.RequestException as exc:
+                    st.error(f"Could not reject item: {_api_error_detail(exc)}")
+                    st.stop()
                 st.success("Rejection mail sent and item rejected.")
                 st.rerun()
 

@@ -351,6 +351,12 @@ def reject_request_item_endpoint(
         rejected = reject_request_item(request_id, item_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Rejecting request item failed: request_id=%s item_id=%s", request_id, item_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not complete the rejection. The item was not rejected. {exc}",
+        ) from exc
     if not rejected:
         raise HTTPException(status_code=404, detail="Request item not found")
     return {"request_id": request_id, "item_id": item_id, "rejected": True}
