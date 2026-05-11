@@ -6,14 +6,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 
 import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-
-from app.sanitize import sanitize_text
 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
@@ -23,6 +22,10 @@ PASSWORD_AUTH_USER_KEY = "password_auth_user"
 REQUEST_QUEUE_SELECTION_KEY = "request-queue-selection"
 REQUEST_QUEUE_SNAPSHOT_KEY = "request-queue-request-ids"
 SCAN_LIST_STATUSES = {"WAITING_FOR_ATTACHMENT", "FAILED"}
+SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:key|api_key|apikey|access_token|token|password|client_secret|secret)=)([^&\s\"'<>]+)",
+    flags=re.IGNORECASE,
+)
 
 SUPPORTED_MESSAGE_LANGUAGES = {"de", "en", "pl"}
 LANGUAGE_LABELS = {"de": "German", "en": "English", "pl": "Polish"}
@@ -664,10 +667,27 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+def _sanitize_text(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = SENSITIVE_QUERY_RE.sub(r"\1[redacted]", text)
+    for env_name in (
+        "ZOTERO_API_KEY",
+        "NEXTCLOUD_PASSWORD",
+        "FORMCYCLE_WEBHOOK_SECRET",
+        "CLARIFICATION_TOKEN_SECRET",
+        "INTERNAL_API_TOKEN",
+        "SMTP_PASSWORD",
+    ):
+        secret = os.environ.get(env_name)
+        if secret and len(secret) >= 6:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
 def _api_error_detail(exc: requests.RequestException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
-        return sanitize_text(exc)
+        return _sanitize_text(exc)
     try:
         payload = response.json()
     except ValueError:
@@ -675,10 +695,10 @@ def _api_error_detail(exc: requests.RequestException) -> str:
     if isinstance(payload, dict) and payload.get("detail"):
         detail = payload["detail"]
         if isinstance(detail, str):
-            return sanitize_text(detail)
-        return sanitize_text(json.dumps(detail, ensure_ascii=False))
+            return _sanitize_text(detail)
+        return _sanitize_text(json.dumps(detail, ensure_ascii=False))
     text = (response.text or "").strip()
-    return sanitize_text(text or str(exc))
+    return _sanitize_text(text or str(exc))
 
 
 def fetch_requests() -> list[dict]:
