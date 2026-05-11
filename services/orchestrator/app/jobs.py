@@ -18,6 +18,7 @@ from app.delivery_pdf import prepend_delivery_cover_page
 from app.models import DeliveryRequest, JobEvent, RequestItem
 from app.ocr import OcrOverlayResult, create_tesseract_overlay_pdf
 from app.resolution import ResolutionService
+from app.sanitize import sanitize_json_text, sanitize_text
 from app.schemas import (
     ApproveMetadataRequest,
     BibliographicData,
@@ -182,7 +183,7 @@ def list_job_events(request_id: str) -> list[JobEventSummary]:
                 request_item_id=event.request_item_id,
                 level=event.level,
                 event_type=event.event_type,
-                payload_json=event.payload_json,
+                payload_json=sanitize_json_text(event.payload_json),
                 created_at=event.created_at,
             )
             for event in events
@@ -1427,7 +1428,7 @@ def _cleanup_expired_delivery_file() -> bool:
                 payload={
                     "remote_path": remote_path,
                     "expires_on": snapshot["expires_on"],
-                    "error": str(exc),
+                    "error": sanitize_text(exc),
                 },
                 level="WARNING",
             )
@@ -1485,7 +1486,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
             expires_on=item.expires_on,
             pdf_page_count=item.pdf_page_count,
             download_deleted_at=item.download_deleted_at,
-            last_error=item.last_error,
+            last_error=sanitize_text(item.last_error),
             review_notes=item.review_notes,
             raw_json=item.raw_json,
             normalized_json=item.normalized_json,
@@ -1502,7 +1503,7 @@ def build_request_summary(request: DeliveryRequest) -> RequestSummary:
         language=request.form_language,
         status=request.status,
         delivery_days=request.delivery_days,
-        last_error=request.last_error,
+        last_error=sanitize_text(request.last_error),
         notification_sent_at=request.notification_sent_at,
         created_at=request.created_at,
         updated_at=request.updated_at,
@@ -1518,13 +1519,14 @@ def log_event(
     payload: dict | None = None,
     level: str = "INFO",
 ) -> None:
+    payload_json = json.dumps(payload, ensure_ascii=True) if payload is not None else None
     session.add(
         JobEvent(
             request_id=request_id,
             request_item_id=request_item_id,
             level=level,
             event_type=event_type,
-            payload_json=json.dumps(payload, ensure_ascii=True) if payload is not None else None,
+            payload_json=sanitize_json_text(payload_json),
         )
     )
 
@@ -1708,7 +1710,7 @@ def _process_zotero_stage(snapshot: dict) -> None:
                 snapshot["request_id"],
                 snapshot["item_id"],
                 existing_item["key"],
-                str(exc),
+                sanitize_text(exc),
             )
         else:
             if enrichment_patch:
@@ -1858,6 +1860,7 @@ def _attempt_request_notification(request_id: str, request_item_id: int) -> None
         _maybe_finalize_request(request_id)
     except Exception as exc:
         retry_at = _next_notification_retry_time()
+        message = sanitize_text(exc)
         with session_scope() as session:
             request = session.scalar(
                 select(DeliveryRequest)
@@ -1866,10 +1869,10 @@ def _attempt_request_notification(request_id: str, request_item_id: int) -> None
             )
             if not request:
                 return
-            request.last_error = str(exc)
+            request.last_error = message
             for item in request.items:
                 if item.status == "READY_TO_NOTIFY":
-                    item.last_error = str(exc)
+                    item.last_error = message
                     item.next_poll_at = retry_at
             _sync_request_status(session, request)
             log_event(
@@ -1877,7 +1880,7 @@ def _attempt_request_notification(request_id: str, request_item_id: int) -> None
                 request_id=request.request_id,
                 request_item_id=request_item_id,
                 event_type="notification_failed",
-                payload={"error": str(exc), "retry_at": retry_at.isoformat()},
+                payload={"error": message, "retry_at": retry_at.isoformat()},
                 level="ERROR",
             )
 
@@ -1959,7 +1962,7 @@ def _maybe_finalize_request(request_id: str) -> None:
 
 
 def _mark_item_failed(snapshot: dict, exc: Exception) -> None:
-    message = str(exc)
+    message = sanitize_text(exc)
     with session_scope() as session:
         item = session.get(RequestItem, snapshot["item_id"])
         if not item:

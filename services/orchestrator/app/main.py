@@ -35,6 +35,7 @@ from app.jobs import (
     update_email_template,
     update_rejection_template,
 )
+from app.sanitize import sanitize_text
 from app.schemas import (
     ApproveMetadataRequest,
     FormCycleClarificationResponse,
@@ -355,7 +356,7 @@ def reject_request_item_endpoint(
         logger.exception("Rejecting request item failed: request_id=%s item_id=%s", request_id, item_id)
         raise HTTPException(
             status_code=502,
-            detail=f"Could not complete the rejection. The item was not rejected. {exc}",
+            detail=f"Could not complete the rejection. The item was not rejected. {sanitize_text(exc)}",
         ) from exc
     if not rejected:
         raise HTTPException(status_code=404, detail="Request item not found")

@@ -13,6 +13,8 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
+from app.sanitize import sanitize_text
+
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
@@ -665,7 +667,7 @@ def _headers() -> dict[str, str]:
 def _api_error_detail(exc: requests.RequestException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
-        return str(exc)
+        return sanitize_text(exc)
     try:
         payload = response.json()
     except ValueError:
@@ -673,10 +675,10 @@ def _api_error_detail(exc: requests.RequestException) -> str:
     if isinstance(payload, dict) and payload.get("detail"):
         detail = payload["detail"]
         if isinstance(detail, str):
-            return detail
-        return json.dumps(detail, ensure_ascii=False)
+            return sanitize_text(detail)
+        return sanitize_text(json.dumps(detail, ensure_ascii=False))
     text = (response.text or "").strip()
-    return text or str(exc)
+    return sanitize_text(text or str(exc))
 
 
 def fetch_requests() -> list[dict]:

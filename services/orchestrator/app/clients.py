@@ -340,7 +340,6 @@ class ZoteroClient:
                 content_type="application/json",
                 extra_headers={"If-Unmodified-Since-Version": str(current_version)},
             ),
-            params={"key": self.api_key},
             json=patch,
             timeout=30,
         )
@@ -355,7 +354,6 @@ class ZoteroClient:
         response = requests.post(
             endpoint,
             headers=self._headers(content_type="application/json"),
-            params={"key": self.api_key},
             json=[item],
             timeout=30,
         )
@@ -371,7 +369,6 @@ class ZoteroClient:
         response = requests.get(
             f"{self.base}/items/{item_key}/children",
             headers=self._headers(),
-            params={"key": self.api_key},
             timeout=30,
         )
         response.raise_for_status()
@@ -385,7 +382,6 @@ class ZoteroClient:
         response = requests.get(
             f"{self.base}/items/{attachment_key}/file",
             headers=self._headers(),
-            params={"key": self.api_key},
             stream=True,
             timeout=120,
         )
@@ -427,7 +423,6 @@ class ZoteroClient:
                 content_type="application/x-www-form-urlencoded",
                 extra_headers={"If-None-Match": "*"},
             ),
-            params={"key": self.api_key},
             data={"upload": upload_key},
             timeout=60,
         )
@@ -439,7 +434,6 @@ class ZoteroClient:
             f"{self.base}/items/{item_key}",
             headers=self._headers(),
             params={
-                "key": self.api_key,
                 "format": "bib",
                 "style": style,
                 "locale": locale,
@@ -467,7 +461,6 @@ class ZoteroClient:
         response = requests.post(
             endpoint,
             headers=self._headers(content_type="application/json"),
-            params={"key": self.api_key},
             json=[item],
             timeout=30,
         )
@@ -492,7 +485,6 @@ class ZoteroClient:
                 content_type="application/x-www-form-urlencoded",
                 extra_headers={"If-None-Match": "*"},
             ),
-            params={"key": self.api_key},
             data=payload,
             timeout=60,
         )
@@ -509,7 +501,7 @@ class ZoteroClient:
         response = requests.get(
             url,
             headers=self._headers(),
-            params={"key": self.api_key, "q": query},
+            params={"q": query},
             timeout=30,
         )
         response.raise_for_status()
@@ -519,7 +511,6 @@ class ZoteroClient:
         response = requests.get(
             f"{self.base}/items/{item_key}",
             headers=self._headers(),
-            params={"key": self.api_key},
             timeout=30,
         )
         response.raise_for_status()
@@ -771,6 +762,8 @@ class ZoteroClient:
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, str]:
         headers = {"Zotero-API-Version": "3"}
+        if self.api_key:
+            headers["Zotero-API-Key"] = self.api_key
         if content_type:
             headers["Content-Type"] = content_type
         if extra_headers:

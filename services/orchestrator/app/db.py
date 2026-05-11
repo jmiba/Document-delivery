@@ -38,6 +38,7 @@ def init_db() -> None:
     _seed_clarification_templates()
     _seed_rejection_templates()
     _seed_operator_text_templates()
+    _sanitize_persisted_error_text()
 
 
 def _migrate_sqlite() -> None:
@@ -78,6 +79,35 @@ def _migrate_sqlite() -> None:
             for column_name, statement in statements.items():
                 if column_name not in columns:
                     connection.execute(text(statement))
+
+
+def _sanitize_persisted_error_text() -> None:
+    from app.sanitize import sanitize_json_text, sanitize_text
+
+    with engine.begin() as connection:
+        for table_name, column_name in (
+            ("delivery_requests", "last_error"),
+            ("request_items", "last_error"),
+        ):
+            rows = connection.execute(
+                text(f"SELECT id, {column_name} FROM {table_name} WHERE {column_name} IS NOT NULL")
+            )
+            for row_id, value in rows:
+                sanitized = sanitize_text(value)
+                if sanitized != value:
+                    connection.execute(
+                        text(f"UPDATE {table_name} SET {column_name} = :value WHERE id = :id"),
+                        {"value": sanitized, "id": row_id},
+                    )
+
+        rows = connection.execute(text("SELECT id, payload_json FROM job_events WHERE payload_json IS NOT NULL"))
+        for row_id, value in rows:
+            sanitized = sanitize_json_text(value)
+            if sanitized != value:
+                connection.execute(
+                    text("UPDATE job_events SET payload_json = :value WHERE id = :id"),
+                    {"value": sanitized, "id": row_id},
+                )
 
 
 def _seed_email_templates() -> None:
