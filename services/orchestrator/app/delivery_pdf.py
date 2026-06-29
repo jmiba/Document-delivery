@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -10,9 +11,34 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.schemas import BibliographicData
+
+_COVER_FONT_FILE_PAIRS = (
+    (
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ),
+    (
+        Path("/usr/share/fonts/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+    ),
+    (
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+    ),
+    (
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    ),
+    (
+        Path("/Library/Fonts/Arial.ttf"),
+        Path("/Library/Fonts/Arial Bold.ttf"),
+    ),
+)
 
 
 def prepend_delivery_cover_page(
@@ -164,11 +190,12 @@ def _table_style() -> TableStyle:
 
 def _styles() -> dict[str, ParagraphStyle]:
     sample_styles = getSampleStyleSheet()
+    regular_font, bold_font = _cover_font_names()
     return {
         "title": ParagraphStyle(
             "CoverTitle",
             parent=sample_styles["Heading1"],
-            fontName="Helvetica-Bold",
+            fontName=bold_font,
             fontSize=18,
             leading=22,
             textColor=colors.HexColor("#111827"),
@@ -177,7 +204,7 @@ def _styles() -> dict[str, ParagraphStyle]:
         "subtitle": ParagraphStyle(
             "CoverSubtitle",
             parent=sample_styles["BodyText"],
-            fontName="Helvetica",
+            fontName=regular_font,
             fontSize=10,
             leading=13,
             textColor=colors.HexColor("#4b5563"),
@@ -186,7 +213,7 @@ def _styles() -> dict[str, ParagraphStyle]:
         "heading": ParagraphStyle(
             "SectionHeading",
             parent=sample_styles["Heading2"],
-            fontName="Helvetica-Bold",
+            fontName=bold_font,
             fontSize=12,
             leading=15,
             textColor=colors.HexColor("#111827"),
@@ -195,7 +222,7 @@ def _styles() -> dict[str, ParagraphStyle]:
         "label": ParagraphStyle(
             "Label",
             parent=sample_styles["BodyText"],
-            fontName="Helvetica-Bold",
+            fontName=bold_font,
             fontSize=9.5,
             leading=12,
             textColor=colors.HexColor("#111827"),
@@ -204,13 +231,29 @@ def _styles() -> dict[str, ParagraphStyle]:
         "body": ParagraphStyle(
             "Body",
             parent=sample_styles["BodyText"],
-            fontName="Helvetica",
+            fontName=regular_font,
             fontSize=9.5,
             leading=12.5,
             textColor=colors.HexColor("#111827"),
             spaceAfter=0,
         ),
     }
+
+
+@lru_cache(maxsize=1)
+def _cover_font_names() -> tuple[str, str]:
+    for index, (regular_path, bold_path) in enumerate(_COVER_FONT_FILE_PAIRS):
+        if not regular_path.is_file() or not bold_path.is_file():
+            continue
+        regular_name = f"DeliveryCoverSans-{index}"
+        bold_name = f"DeliveryCoverSans-Bold-{index}"
+        try:
+            pdfmetrics.registerFont(TTFont(regular_name, str(regular_path)))
+            pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
+            return regular_name, bold_name
+        except Exception:
+            continue
+    return "Helvetica", "Helvetica-Bold"
 
 
 def _format_date(value: datetime, language: str | None) -> str:

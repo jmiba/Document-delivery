@@ -9,6 +9,7 @@ ARG OCR_TESSERACT_LANG_PACKS="eng deu pol"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        fonts-dejavu-core \
         poppler-utils \
         tesseract-ocr \
     && for lang in ${OCR_TESSERACT_LANG_PACKS}; do \
