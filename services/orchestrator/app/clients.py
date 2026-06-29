@@ -366,17 +366,24 @@ class ZoteroClient:
         return successful[first_key]["key"]
 
     def find_pdf_attachment(self, item_key: str) -> str | None:
+        attachments = self.list_pdf_attachments(item_key)
+        return attachments[0] if attachments else None
+
+    def list_pdf_attachments(self, item_key: str) -> list[str]:
         response = requests.get(
             f"{self.base}/items/{item_key}/children",
             headers=self._headers(),
             timeout=30,
         )
         response.raise_for_status()
+        attachments: list[tuple[int, str]] = []
         for child in response.json():
             data = child.get("data", {})
-            if data.get("itemType") == "attachment" and data.get("contentType") == "application/pdf":
-                return child.get("key")
-        return None
+            key = _clean(child.get("key")) or _clean(data.get("key"))
+            if key and self._is_pdf_attachment(data):
+                attachments.append((self._attachment_download_priority(data), key))
+        attachments.sort(key=lambda entry: entry[0])
+        return [key for _, key in attachments]
 
     def download_attachment(self, attachment_key: str, destination: Path) -> Path:
         response = requests.get(
@@ -385,6 +392,8 @@ class ZoteroClient:
             stream=True,
             timeout=120,
         )
+        if response.status_code == 404:
+            raise ZoteroAttachmentFileNotFound(attachment_key)
         response.raise_for_status()
         with destination.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 64):
@@ -756,6 +765,22 @@ class ZoteroClient:
         }
         return aliases.get(key, value)
 
+    def _is_pdf_attachment(self, data: dict) -> bool:
+        if data.get("itemType") != "attachment":
+            return False
+        content_type = _clean(data.get("contentType")).casefold()
+        filename = _clean(data.get("filename")).casefold()
+        title = _clean(data.get("title")).casefold()
+        return content_type == "application/pdf" or filename.endswith(".pdf") or title.endswith(".pdf")
+
+    def _attachment_download_priority(self, data: dict) -> int:
+        link_mode = _clean(data.get("linkMode")).casefold()
+        if link_mode in {"imported_file", "imported_url"}:
+            return 0
+        if not link_mode:
+            return 1
+        return 2
+
     def _headers(
         self,
         content_type: str | None = None,
@@ -769,6 +794,12 @@ class ZoteroClient:
         if extra_headers:
             headers.update(extra_headers)
         return headers
+
+
+class ZoteroAttachmentFileNotFound(RuntimeError):
+    def __init__(self, attachment_key: str) -> None:
+        self.attachment_key = attachment_key
+        super().__init__(f"Zotero attachment file not found for {attachment_key}.")
 
 
 class NotificationClient:

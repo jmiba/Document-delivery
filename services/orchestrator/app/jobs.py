@@ -10,7 +10,12 @@ from pypdf import PdfReader
 from sqlalchemy import case, delete, select
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.clients import NextcloudClient, NotificationClient, ZoteroClient
+from app.clients import (
+    NextcloudClient,
+    NotificationClient,
+    ZoteroAttachmentFileNotFound,
+    ZoteroClient,
+)
 from app.clarification import build_clarification_form_url, build_clarification_token, verify_clarification_token
 from app.config import settings
 from app.db import session_scope
@@ -1781,17 +1786,10 @@ def _process_delivery_stage(snapshot: dict) -> None:
     if uploaded_scan is not None:
         source_pdf = uploaded_scan
     else:
-        if not attachment_key and snapshot["zotero_item_key"]:
-            attachment_key = zotero.find_pdf_attachment(snapshot["zotero_item_key"])
-        if not attachment_key:
-            _update_item(
-                snapshot["item_id"],
-                status="WAITING_FOR_ATTACHMENT",
-                next_poll_at=_next_poll_time(),
-            )
+        download_source = _download_zotero_pdf_source(zotero, snapshot, work_dir)
+        if download_source is None:
             return
-        source_pdf = work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.source.pdf"
-        zotero.download_attachment(attachment_key, source_pdf)
+        source_pdf, attachment_key = download_source
 
     processed_pdf, ocr_result = _maybe_run_ocr(source_pdf)
     if ocr_result is not None:
@@ -1853,6 +1851,61 @@ def _process_delivery_stage(snapshot: dict) -> None:
 
 def _process_notification_stage(snapshot: dict) -> None:
     _attempt_request_notification(snapshot["request_id"], snapshot["item_id"])
+
+
+def _download_zotero_pdf_source(zotero: ZoteroClient, snapshot: dict, work_dir: Path) -> tuple[Path, str] | None:
+    attachment_candidates = _zotero_pdf_attachment_candidates(zotero, snapshot)
+    if not attachment_candidates:
+        _update_item(
+            snapshot["item_id"],
+            zotero_attachment_key=None,
+            status="WAITING_FOR_ATTACHMENT",
+            next_poll_at=_next_poll_time(),
+            last_error=None,
+        )
+        return None
+
+    source_pdf = work_dir / f"{snapshot['request_id']}-{snapshot['item_index']}.source.pdf"
+    for attachment_key in attachment_candidates:
+        try:
+            zotero.download_attachment(attachment_key, source_pdf)
+        except ZoteroAttachmentFileNotFound as exc:
+            _log_zotero_attachment_file_missing_event(
+                snapshot["request_id"],
+                snapshot["item_id"],
+                attachment_key,
+                sanitize_text(exc),
+            )
+            continue
+
+        if attachment_key != snapshot["zotero_attachment_key"]:
+            _log_zotero_attachment_reused_event(
+                snapshot["request_id"],
+                snapshot["item_id"],
+                attachment_key,
+                "downloadable_parent_attachment",
+            )
+        return source_pdf, attachment_key
+
+    _update_item(
+        snapshot["item_id"],
+        zotero_attachment_key=None,
+        status="WAITING_FOR_ATTACHMENT",
+        next_poll_at=_next_poll_time(),
+        last_error=None,
+    )
+    return None
+
+
+def _zotero_pdf_attachment_candidates(zotero: ZoteroClient, snapshot: dict) -> list[str]:
+    candidates: list[str] = []
+    if snapshot["zotero_attachment_key"]:
+        candidates.append(snapshot["zotero_attachment_key"])
+    if snapshot["zotero_item_key"]:
+        for attachment_key in zotero.list_pdf_attachments(snapshot["zotero_item_key"]):
+            if attachment_key not in candidates:
+                candidates.append(attachment_key)
+    return candidates
 
 
 def _attempt_request_notification(request_id: str, request_item_id: int) -> None:
@@ -2083,6 +2136,26 @@ def _log_zotero_attachment_reused_event(
             payload={
                 "zotero_attachment_key": attachment_key,
                 "reason": reason,
+            },
+        )
+
+
+def _log_zotero_attachment_file_missing_event(
+    request_id: str,
+    request_item_id: int,
+    attachment_key: str,
+    error: str,
+) -> None:
+    with session_scope() as session:
+        log_event(
+            session,
+            request_id=request_id,
+            request_item_id=request_item_id,
+            event_type="zotero_attachment_file_missing",
+            level="WARNING",
+            payload={
+                "zotero_attachment_key": attachment_key,
+                "error": error,
             },
         )
 
